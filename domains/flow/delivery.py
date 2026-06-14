@@ -34,6 +34,8 @@ class DataPaths:
     ma_bonus: str = "5%"
     open_payments: Optional[str] = None
     part_d_drug: Optional[str] = None
+    op_prior: Optional[str] = None          # prior-year Open Payments (for DiD)
+    partd_drug_prior: Optional[str] = None  # prior-year Part D by-drug (for DiD)
     service: Optional[str] = None
     summary: Optional[str] = None
     hospital: Optional[str] = None
@@ -49,6 +51,8 @@ def _paths_from_args(args) -> "DataPaths":
         ma_bonus=getattr(args, "ma_bonus", "5%"),
         open_payments=getattr(args, "open_payments", None),
         part_d_drug=getattr(args, "part_d_drug", None),
+        op_prior=getattr(args, "op_prior", None),
+        partd_drug_prior=getattr(args, "partd_drug_prior", None),
         service=getattr(args, "service", None),
         summary=getattr(args, "summary", None),
         hospital=(getattr(args, "hospital", None) or None),
@@ -96,10 +100,22 @@ def assemble(paths: DataPaths, *, allow_synthetic: bool = True,
         led.extend(L.from_ma(
             MedicareAdvantageTwoCell().evaluate_all(synthetic_contracts())))
 
-    # -- Drug-level conflict of interest ------------------------------------
-    from domains.flow.conflict import DrugLevelConflict, synthetic_drug_inputs
-    if paths.open_payments and paths.part_d_drug:
-        from domains.flow.ingest import load_open_payments_by_drug, load_part_d_by_drug
+    # -- Conflict of interest: prefer causal DiD when 2 years are available --
+    from domains.flow.conflict import (
+        DrugLevelConflict, DiDConflict, synthetic_drug_inputs,
+    )
+    from domains.flow.ingest import load_open_payments_by_drug, load_part_d_by_drug
+    if (paths.open_payments and paths.part_d_drug
+            and paths.op_prior and paths.partd_drug_prior):
+        log("assemble: conflict diff-in-differences (real, slow)...")
+        pay_post = load_open_payments_by_drug(paths.open_payments)
+        pay_prior = load_open_payments_by_drug(paths.op_prior)
+        keep = {d for _n, d in pay_post} | {d for _n, d in pay_prior}
+        rx_post = load_part_d_by_drug(paths.part_d_drug, keep_drugs=keep)
+        rx_prior = load_part_d_by_drug(paths.partd_drug_prior, keep_drugs=keep)
+        led.extend(L.from_did(DiDConflict().analyze(
+            rx_prior, rx_post, set(pay_post), set(pay_prior))))
+    elif paths.open_payments and paths.part_d_drug:
         log("assemble: drug-level conflict (real, slow)...")
         pay = load_open_payments_by_drug(paths.open_payments)
         rx = load_part_d_by_drug(paths.part_d_drug, keep_drugs={d for _n, d in pay})
@@ -129,12 +145,22 @@ def assemble(paths: DataPaths, *, allow_synthetic: bool = True,
         led.extend(L.from_hospital(
             HospitalPriceCoherence().analyze(synthetic_records())))
 
-    # -- Outliers + Nash (synthetic demos only) -----------------------------
-    if allow_synthetic:
-        from domains.flow.outliers import YonedaOutlierEngine, synthetic_fingerprints
+    # -- Yoneda outliers (real billing if --service, else synthetic) --------
+    from domains.flow.outliers import YonedaOutlierEngine
+    if paths.service:
+        from domains.flow.ingest import load_provider_fingerprints
+        log("assemble: Yoneda outliers (real billing)...")
+        fps, specs = load_provider_fingerprints(paths.service)
+        led.extend(L.from_outliers(YonedaOutlierEngine().analyze(fps, specs)))
+    elif allow_synthetic:
+        from domains.flow.outliers import synthetic_fingerprints
         fps, specs = synthetic_fingerprints()
         led.extend(L.from_outliers(
             YonedaOutlierEngine(min_peers=3, min_billed=50_000).analyze(fps, specs)))
+
+    # -- Nash gaming (synthetic only -- real per-market coding intensity is
+    #    the same non-public MA risk data; see the Nash limitation note) -----
+    if allow_synthetic:
         from domains.flow.nash_sheaf import NashSheaf, synthetic_observations
         led.extend(L.from_nash(NashSheaf().analyze(synthetic_observations())))
 

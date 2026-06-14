@@ -9,12 +9,14 @@ import domains  # noqa: F401  (path bootstrap)
 
 from domains.flow.ledger import (
     Ledger, Finding, tier, summarize,
-    from_ma, from_drug_conflict, from_conservation,
+    from_ma, from_drug_conflict, from_conservation, from_did,
 )
 from domains.flow.medicare_advantage import (
     MedicareAdvantageTwoCell, synthetic_contracts,
 )
-from domains.flow.conflict import DrugLevelConflict, synthetic_drug_inputs
+from domains.flow.conflict import (
+    DrugLevelConflict, synthetic_drug_inputs, DiDConflict, synthetic_did_inputs,
+)
 
 
 def test_finding_priority_and_tier():
@@ -42,6 +44,16 @@ def test_from_drug_conflict_excess_dollars():
     # excess = (mean_paid - mean_unpaid) * n_paid = (850000 - 79166.67) * 3
     assert abs(f.dollars - (850000 - (475000/6)) * 3) < 1.0
     assert f.tier == "MEDIUM"
+
+
+def test_from_did_attributable_findings():
+    rx_prior, rx_post, paid_post, paid_prior = synthetic_did_inputs()
+    rep = DiDConflict(min_group=25).analyze(rx_prior, rx_post, paid_post, paid_prior)
+    fs = from_did(rep)
+    assert len(fs) == 1 and fs[0].detector == "conflict_did"
+    assert fs[0].entity == "drug:DRUGX"
+    assert abs(fs[0].dollars - 150_000 * 30) < 1.0       # DiD * n_treat
+    assert fs[0].tier == "MEDIUM"                          # conf 0.60
 
 
 def test_conservation_one_directional_is_low_confidence():

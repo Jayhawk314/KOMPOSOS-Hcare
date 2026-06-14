@@ -221,7 +221,13 @@ energy *H¹ = xᵀLx = Σ w(x_v − x_u)²* (zero for a constant/coherent policy
 plan is flagged only when cross-market variance is high **and** correlation with
 the local Nash intensity is high — i.e. the incoherence is strategic, not
 stochastic. This is a genuinely novel detector (game theory ⊗ sheaf theory).
-**Status: working on synthetic markets.**
+**Status: working on synthetic markets — and the one detector that cannot go
+fully real on public data.** Its input is each plan's *coding intensity per
+market*, which is exactly the non-public MA risk-score data (CMS computes it
+from restricted encounter/RAPS records; MedPAC estimates it only nationally).
+So Nash stays a validated method awaiting either a data-use agreement for
+encounter data or a published per-contract risk proxy — an honest limit, not a
+TODO. Every other detector runs on real national data.
 
 ### 5.5 NPI co-load — the join that makes it one map
 

@@ -7,6 +7,13 @@ The novel detector. Every other flow tool looks at one entity at a time; this
 one finds gaming that is *invisible in any single market* and only shows up as
 an inconsistency across markets.
 
+Data note (the one detector that cannot go fully real on public data): its
+input is each plan's observed coding intensity per market, which is the
+non-public MA risk-score data (CMS computes it from restricted encounter/RAPS
+records; MedPAC estimates it only nationally). The method is validated on
+synthetic markets; making it real needs an encounter-data DUA or a published
+per-contract risk proxy. An honest limit, not a TODO.
+
 Construction
 ------------
 A plan operates in many markets (counties). In each market it chooses a coding

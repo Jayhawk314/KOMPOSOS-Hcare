@@ -37,6 +37,7 @@ CONF = {
     "npi_conflict": 0.40,        # association, not drug-controlled
     "outlier": 0.45,             # peer-relative, review
     "nash_gaming": 0.50,         # novel strategic signal
+    "conflict_did": 0.60,        # diff-in-diff net of trend (stronger than lift)
     "hospital_price": 0.45,      # paid above same-state peer; case-mix caveat
     "billing_conservation": 0.12,  # 2024 gap is a one-directional data artifact
 }
@@ -147,6 +148,23 @@ def from_drug_conflict(report) -> List[Finding]:
             dollars=excess, confidence=CONF["drug_conflict"],
             basis=f"lift {l.lift:.2f}x ({l.n_paid:,} paid prescribers)",
             caveat="association, not causation; drug-controlled",
+        ))
+    return out
+
+
+def from_did(report) -> List[Finding]:
+    """Diff-in-differences conflict: per-drug excess prescribing growth for
+    newly-paid providers, net of the never-paid control trend (causal-grade)."""
+    out = []
+    for d in report.drugs:
+        if d.did <= 0 or d.attributable <= 0:
+            continue
+        out.append(Finding(
+            detector="conflict_did", entity=f"drug:{d.drug}",
+            category="excess prescribing growth after newly being paid (DiD)",
+            dollars=d.attributable, confidence=CONF["conflict_did"],
+            basis=f"DiD ${d.did:,.0f}/prov net of trend, {d.n_treat:,} newly-paid",
+            caveat="diff-in-diff, 2 periods; observational, not proof of cause",
         ))
     return out
 
