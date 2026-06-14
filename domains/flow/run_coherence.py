@@ -384,6 +384,59 @@ def run_coload(args) -> int:
     return 0
 
 
+def run_conflict(args) -> int:
+    """Open Payments x Part D conflict-of-interest 2-cell.
+
+    Real files if given (--open-payments + --part-d [+ --nppes]), else synthetic.
+    """
+    from domains.flow.conflict import (
+        ConflictDetector, summarize as cf_summarize, synthetic_inputs,
+    )
+    cat = Category(db_path=":memory:")
+    cosmos = None
+    try:
+        from core.cosmos import InfinityCosmos
+        cosmos = InfinityCosmos(cat)
+    except Exception:
+        pass
+
+    if args.open_payments and args.part_d:
+        from domains.flow.ingest import (
+            load_open_payments, load_part_d, load_nppes, specialty_map,
+        )
+        print(f"loading Open Payments {args.open_payments} ...", flush=True)
+        payments = load_open_payments(args.open_payments).values
+        print(f"loading Part D {args.part_d} ...", flush=True)
+        prescribing = load_part_d(args.part_d).values
+        spec = {}
+        if args.nppes:
+            spec = specialty_map(load_nppes(args.nppes))
+        print(f"  payments: {len(payments):,} NPIs; prescribing: "
+              f"{len(prescribing):,} NPIs\n", flush=True)
+        engine = ConflictDetector(category=cat, cosmos=cosmos)
+    else:
+        payments, prescribing, spec = synthetic_inputs()
+        print("synthetic conflict inputs (use --open-payments + --part-d for "
+              "real data)\n")
+        # Tiny demo group: relax the percentile gate so it flags the
+        # paid-and-high-prescribing cluster, not just the single top provider.
+        engine = ConflictDetector(category=cat, cosmos=cosmos, flag_pct=0.6)
+
+    report = engine.analyze(payments, prescribing, specialty=spec)
+    print(cf_summarize(report))
+
+    two_cells = 0
+    if cosmos is not None:
+        try:
+            two_cells = len(cosmos.homotopy_2_category(rebuild=True).two_cells)
+        except Exception:
+            two_cells = 0
+    risks = [m for m in cat.morphisms() if m.name == "conflict_risk"]
+    print(f"\nCategory: {len(cat.objects())} objects, {len(cat.morphisms())} "
+          f"morphisms ({len(risks)} conflict_risk edges); {two_cells} 2-cells in h2K")
+    return 0
+
+
 def run_nash_sheaf() -> int:
     """Nash sheaf: cross-market strategic-gaming detection (synthetic demo)."""
     from domains.flow.nash_sheaf import (
@@ -454,6 +507,9 @@ def main(argv=None) -> int:
                         "by-Provider-and-Service CSV, else synthetic")
     p.add_argument("--nash-sheaf", action="store_true",
                    help="cross-market strategic-gaming detection (Nash sheaf)")
+    p.add_argument("--conflict", action="store_true",
+                   help="Open Payments x Part D conflict-of-interest 2-cell "
+                        "(uses --open-payments + --part-d, else synthetic)")
     p.add_argument("--coload", action="store_true",
                    help="NPI co-load: join billing + Part D + Open Payments + "
                         "NPPES into one category on the NPI spine (uses "
@@ -485,6 +541,8 @@ def main(argv=None) -> int:
         return run_ma(args.ma or None)
     if args.outliers is not None:
         return run_outliers(args.outliers or None)
+    if args.conflict:
+        return run_conflict(args)
     if args.coload:
         return run_coload(args)
     if args.nash_sheaf:
