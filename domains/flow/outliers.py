@@ -69,6 +69,40 @@ def consensus(fps: List[Fingerprint]) -> Dict[str, float]:
     return {k: v / n for k, v in acc.items()}
 
 
+def peer_prevalence(fps: List[Fingerprint]) -> Dict[str, float]:
+    """Fraction of peers that bill each code (the peer-support presheaf).
+
+    This is what makes outlier detection discriminating at national scale: the
+    weighted-Jaccard distance to a consensus averaged over ~100k providers
+    saturates near 1 for everyone, but *prevalence* stays informative -- it says
+    how unusual each code is among peers.
+    """
+    n = 0
+    cnt: Dict[str, int] = {}
+    for fp in fps:
+        if not normalize(fp):
+            continue
+        n += 1
+        for k, v in fp.items():
+            if v > 0:
+                cnt[k] = cnt.get(k, 0) + 1
+    if n == 0:
+        return {}
+    return {k: c / n for k, c in cnt.items()}
+
+
+def rarity_score(fp: Fingerprint, prevalence: Mapping[str, float]) -> float:
+    """Share of a provider's billing in codes that are rare among peers.
+
+    score = sum_c share_p(c) * (1 - prevalence(c)),  in [0, 1].
+    High = the provider concentrates its billing in codes few peers use -- the
+    genuine outlier signal (e.g. skin-substitute codes billed by a handful of
+    providers), which the saturating distance-to-consensus could not surface.
+    """
+    nfp = normalize(fp)
+    return sum(share * (1.0 - prevalence.get(c, 0.0)) for c, share in nfp.items())
+
+
 # ---------------------------------------------------------------------------
 # Result types
 # ---------------------------------------------------------------------------
@@ -76,10 +110,11 @@ def consensus(fps: List[Fingerprint]) -> Dict[str, float]:
 class OutlierResult:
     npi: str
     specialty: str
-    distance: float                 # Yoneda distance to specialty consensus
+    distance: float                 # Yoneda distance to specialty consensus (reported)
     total_billed: float
     peers: int
-    driver_codes: List[str] = field(default_factory=list)  # codes over-billed vs peers
+    rarity: float = 0.0             # share of billing in codes rare among peers (flag basis)
+    driver_codes: List[str] = field(default_factory=list)  # rare codes the provider over-bills
 
     @property
     def is_outlier(self) -> bool:
@@ -107,11 +142,18 @@ class YonedaOutlierEngine:
     """
 
     def __init__(self, distance_threshold: float = 0.6, min_billed: float = 50_000.0,
-                 min_peers: int = 3, category=None) -> None:
+                 min_peers: int = 3, category=None, max_writes: int = 500,
+                 rarity_threshold: float = 0.5) -> None:
         self.distance_threshold = distance_threshold
         self.min_billed = min_billed
         self.min_peers = min_peers
         self.category = category
+        # Cap Category write-back (backend commits per insert) to the top flagged.
+        self.max_writes = max_writes
+        # Flag basis at scale: share of billing in codes rare among peers. The
+        # distance-to-consensus saturates over huge specialty groups, so it is
+        # reported but not used as the gate.
+        self.rarity_threshold = rarity_threshold
 
     def analyze(self, fingerprints: Mapping[str, Fingerprint],
                 specialties: Mapping[str, str]) -> List[OutlierResult]:
@@ -123,33 +165,40 @@ class YonedaOutlierEngine:
         results: List[OutlierResult] = []
         for spec, npis in by_spec.items():
             peers = len(npis)
-            cons = consensus([fingerprints[n] for n in npis])
+            group = [fingerprints[n] for n in npis]
+            cons = consensus(group)
+            prev = peer_prevalence(group)
             for npi in npis:
                 fp = fingerprints[npi]
                 total = sum(v for v in fp.values() if v > 0)
-                # consensus excluding self would be ideal; for small groups the
-                # group consensus is a fair, stable reference.
-                dist = yoneda_distance(fp, cons)
-                drivers = self._driver_codes(fp, cons)
+                dist = yoneda_distance(fp, cons)        # reported (saturates at scale)
+                rar = rarity_score(fp, prev)            # flag basis (discriminating)
+                drivers = self._driver_codes(fp, prev)
                 r = OutlierResult(npi=npi, specialty=spec, distance=dist,
-                                  total_billed=total, peers=peers, driver_codes=drivers)
+                                  total_billed=total, peers=peers, rarity=rar,
+                                  driver_codes=drivers)
                 r._flag = (
-                    dist >= self.distance_threshold
+                    rar >= self.rarity_threshold
                     and total >= self.min_billed
                     and peers >= self.min_peers
                 )
                 results.append(r)
-                if self.category is not None and r._flag:
+        results.sort(key=lambda x: (-x.rarity, -x.total_billed))
+        # Write back only the top flagged (bounded; backend commits per insert).
+        if self.category is not None:
+            written = 0
+            for r in results:
+                if r._flag and written < self.max_writes:
                     self._write_back(r)
-        results.sort(key=lambda x: (-x.distance, -x.total_billed))
+                    written += 1
         return results
 
-    def _driver_codes(self, fp: Fingerprint, cons: Mapping[str, float],
+    def _driver_codes(self, fp: Fingerprint, prevalence: Mapping[str, float],
                       top: int = 5) -> List[str]:
-        """Codes the provider over-weights most relative to peers."""
+        """Rare codes (low peer prevalence) the provider concentrates billing in."""
         nfp = normalize(fp)
-        excess = {k: nfp.get(k, 0.0) - cons.get(k, 0.0) for k in nfp}
-        ranked = sorted(excess.items(), key=lambda kv: -kv[1])
+        contrib = {k: share * (1.0 - prevalence.get(k, 0.0)) for k, share in nfp.items()}
+        ranked = sorted(contrib.items(), key=lambda kv: -kv[1])
         return [k for k, v in ranked[:top] if v > 0]
 
     def _write_back(self, r: OutlierResult) -> None:
@@ -171,7 +220,7 @@ def summarize(results: List[OutlierResult], top: int = 15) -> str:
     for r in flagged[:top]:
         drv = ("  drivers=" + ",".join(r.driver_codes)) if r.driver_codes else ""
         lines.append(
-            f"  {r.npi:<14} {r.specialty:<22} d={r.distance:.2f}"
+            f"  {r.npi:<14} {r.specialty:<22} rarity={r.rarity:.2f}"
             f"  ${r.total_billed:>13,.0f}  peers={r.peers}{drv}"
         )
     lines.append("-" * 72)

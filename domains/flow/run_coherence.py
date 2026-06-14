@@ -532,6 +532,31 @@ def run_conflict_drug(args) -> int:
     return 0
 
 
+def run_conflict_did(args) -> int:
+    """Diff-in-differences conflict: prescribing change for providers NEWLY paid
+    about a drug vs never-paid. Needs 2 years of Open Payments + Part D by-drug.
+    """
+    from domains.flow.ingest import load_open_payments_by_drug, load_part_d_by_drug
+    from domains.flow.conflict import DiDConflict, summarize_did
+
+    print(f"loading Open Payments POST {args.open_payments} ...", flush=True)
+    paid_post = load_open_payments_by_drug(args.open_payments)
+    print(f"loading Open Payments PRIOR {args.op_prior} ...", flush=True)
+    paid_prior = load_open_payments_by_drug(args.op_prior)
+    keep = {d for _n, d in paid_post} | {d for _n, d in paid_prior}
+    print(f"  {len(keep):,} drugs with payments in either year", flush=True)
+    print(f"loading Part D POST {args.part_d_drug} ...", flush=True)
+    rx_post = load_part_d_by_drug(args.part_d_drug, keep_drugs=keep)
+    print(f"loading Part D PRIOR {args.partd_drug_prior} ...", flush=True)
+    rx_prior = load_part_d_by_drug(args.partd_drug_prior, keep_drugs=keep)
+    print(f"  rx pairs: prior {len(rx_prior):,}, post {len(rx_post):,}\n", flush=True)
+
+    report = DiDConflict().analyze(rx_prior, rx_post,
+                                   set(paid_post), set(paid_prior))
+    print(summarize_did(report))
+    return 0
+
+
 def run_trend_ma(geovar_path: str, years=None) -> int:
     """Multi-year MA overpayment trend from the FFS GeoVar PUF (2014-2024)."""
     from domains.flow.trends import MATrendEngine, summarize as tr_summarize
@@ -664,6 +689,13 @@ def main(argv=None) -> int:
                         "of that drug (uses --open-payments + --part-d-drug)")
     p.add_argument("--part-d-drug", dest="part_d_drug", metavar="CSV",
                    help="Part D Prescribers by Provider AND Drug CSV")
+    p.add_argument("--conflict-did", action="store_true",
+                   help="DIFF-IN-DIFF conflict: prescribing change for providers "
+                        "newly paid about a drug vs never-paid (needs 2 years)")
+    p.add_argument("--op-prior", dest="op_prior", metavar="CSV",
+                   help="prior-year Open Payments general CSV (for --conflict-did)")
+    p.add_argument("--partd-drug-prior", dest="partd_drug_prior", metavar="CSV",
+                   help="prior-year Part D by Provider AND Drug CSV (for --conflict-did)")
     p.add_argument("--coload", action="store_true",
                    help="NPI co-load: join billing + Part D + Open Payments + "
                         "NPPES into one category on the NPI spine (uses "
@@ -702,6 +734,8 @@ def main(argv=None) -> int:
         return run_ma(args.ma or None)
     if args.outliers is not None:
         return run_outliers(args.outliers or None)
+    if args.conflict_did:
+        return run_conflict_did(args)
     if args.conflict_drug:
         return run_conflict_drug(args)
     if args.conflict:

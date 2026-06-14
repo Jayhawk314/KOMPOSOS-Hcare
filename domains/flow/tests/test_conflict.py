@@ -9,6 +9,7 @@ from core.category import Category
 from domains.flow.conflict import (
     ConflictDetector, summarize, synthetic_inputs, _spearman, _percentiles,
     DrugLevelConflict, summarize_drug, synthetic_drug_inputs,
+    DiDConflict, summarize_did, synthetic_did_inputs,
 )
 
 
@@ -108,3 +109,30 @@ def test_drug_summary_runs():
     payments, prescribing = synthetic_drug_inputs()
     rep = DrugLevelConflict(min_group=3).analyze(payments, prescribing)
     assert "per-drug lift" in summarize_drug(rep)
+
+
+# -- difference-in-differences --------------------------------------------
+def test_did_nets_out_the_secular_trend():
+    rx_prior, rx_post, paid_post, paid_prior = synthetic_did_inputs()
+    rep = DiDConflict(min_group=25).analyze(rx_prior, rx_post, paid_post, paid_prior)
+    assert rep.n_drugs == 1
+    d = rep.drugs[0]
+    assert d.drug == "DRUGX"
+    assert d.n_treat == 30 and d.n_control == 30          # 'already paid' excluded
+    assert abs(d.mean_delta_treat - 200_000) < 1.0
+    assert abs(d.mean_delta_control - 50_000) < 1.0
+    assert abs(d.did - 150_000) < 1.0                     # 200k - 50k trend
+    assert abs(d.attributable - 150_000 * 30) < 1.0
+    assert abs(rep.total_attributable - 150_000 * 30) < 1.0
+
+
+def test_did_min_group_filters():
+    rx_prior, rx_post, paid_post, paid_prior = synthetic_did_inputs()
+    rep = DiDConflict(min_group=40).analyze(rx_prior, rx_post, paid_post, paid_prior)
+    assert rep.n_drugs == 0                                # groups are 30 < 40
+
+
+def test_did_summary_runs():
+    rx_prior, rx_post, paid_post, paid_prior = synthetic_did_inputs()
+    rep = DiDConflict(min_group=25).analyze(rx_prior, rx_post, paid_post, paid_prior)
+    assert "diff-in-differences" in summarize_did(rep).lower()

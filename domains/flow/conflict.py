@@ -368,6 +368,113 @@ class DrugLevelConflict:
                 pass
 
 
+@dataclass
+class DrugDiD:
+    drug: str
+    n_treat: int                # newly paid about the drug in the post year
+    n_control: int              # never paid about the drug (either year)
+    mean_delta_treat: float     # mean (post - prior) prescribing $, treatment
+    mean_delta_control: float   # mean (post - prior) prescribing $, control
+    did: float                  # treat - control (the difference-in-differences)
+    attributable: float         # did * n_treat (extra growth beyond trend)
+
+
+@dataclass
+class DiDReport:
+    n_drugs: int
+    median_did: float
+    total_attributable: float   # sum of did*n_treat over drugs with did > 0
+    net_attributable: float     # sum over all drugs (can be negative)
+    drugs: List[DrugDiD] = field(default_factory=list)
+
+
+class DiDConflict:
+    """Difference-in-differences: do providers who *newly* start receiving
+    payments about a drug increase their prescribing of it MORE than providers
+    never paid about it?
+
+    Treatment = paid about drug d in the post year but NOT the prior year.
+    Control   = never paid about d in either year.
+    Outcome   = change in prescribing $ of d, prior -> post.
+    DiD(d)    = mean Δ(treatment) - mean Δ(control).
+
+    Controlling for both the drug AND the secular trend (the control group's own
+    change) is stronger than the cross-sectional lift -- it nets out "this drug
+    was growing for everyone." Still observational: parallel-trends cannot be
+    verified with two periods, and payment is not randomly assigned (stated).
+    """
+
+    def __init__(self, *, min_group: int = 25) -> None:
+        self.min_group = min_group
+
+    def analyze(self, rx_prior, rx_post, paid_post_pairs, paid_prior_pairs) -> DiDReport:
+        import statistics
+        from collections import defaultdict
+
+        drugs = defaultdict(dict)        # drug -> {npi: [prior$, post$]}
+        for (npi, drug), v in rx_prior.items():
+            drugs[drug].setdefault(npi, [0.0, 0.0])[0] = v
+        for (npi, drug), v in rx_post.items():
+            drugs[drug].setdefault(npi, [0.0, 0.0])[1] = v
+        paid_post = defaultdict(set)
+        for (npi, drug) in paid_post_pairs:
+            paid_post[drug].add(npi)
+        paid_prior = defaultdict(set)
+        for (npi, drug) in paid_prior_pairs:
+            paid_prior[drug].add(npi)
+
+        out: List[DrugDiD] = []
+        for drug, npis in drugs.items():
+            pp = paid_post.get(drug, set())
+            pr = paid_prior.get(drug, set())
+            treat, control = [], []
+            for npi, (a, b) in npis.items():
+                d = b - a
+                if npi in pp and npi not in pr:
+                    treat.append(d)
+                elif npi not in pp and npi not in pr:
+                    control.append(d)
+            if len(treat) < self.min_group or len(control) < self.min_group:
+                continue
+            mt = statistics.fmean(treat)
+            mc = statistics.fmean(control)
+            did = mt - mc
+            out.append(DrugDiD(drug, len(treat), len(control), mt, mc, did,
+                               did * len(treat)))
+        out.sort(key=lambda x: -x.attributable)
+        median_did = statistics.median([d.did for d in out]) if out else 0.0
+        return DiDReport(
+            n_drugs=len(out), median_did=median_did,
+            total_attributable=sum(d.attributable for d in out if d.did > 0),
+            net_attributable=sum(d.attributable for d in out),
+            drugs=out,
+        )
+
+
+def summarize_did(report: DiDReport, top: int = 20) -> str:
+    lines = []
+    lines.append("Diff-in-differences: prescribing change for providers NEWLY")
+    lines.append("paid about a drug vs never-paid (controls for drug + trend)")
+    lines.append("=" * 74)
+    lines.append(f"  drugs with treatment & control groups: {report.n_drugs:,}")
+    lines.append(f"  median per-drug DiD: ${report.median_did:,.0f} per provider")
+    lines.append(f"  attributable excess prescribing growth (DiD>0 drugs): "
+                 f"${report.total_attributable:,.0f}")
+    lines.append(f"  net (all drugs): ${report.net_attributable:,.0f}")
+    lines.append("")
+    lines.append("  top drugs by attributable excess (newly-paid vs never-paid):")
+    for d in report.drugs[:top]:
+        lines.append(
+            f"    {d.drug[:26]:<26} DiD ${d.did:>12,.0f}/prov  "
+            f"(treat Δ${d.mean_delta_treat:>11,.0f} vs ctrl Δ${d.mean_delta_control:>11,.0f}, "
+            f"n_treat={d.n_treat:,})  ${d.attributable:>14,.0f}")
+    lines.append("-" * 74)
+    lines.append("  observational: parallel-trends unverifiable with two periods; "
+                 "payment not\n  randomly assigned. Stronger than cross-sectional "
+                 "lift, still not proof of cause.")
+    return "\n".join(lines)
+
+
 def summarize_drug(report: DrugConflictReport, top: int = 20) -> str:
     lines = []
     lines.append("Drug-level Open Payments x Part D conflict (payment ABOUT a drug")
@@ -392,6 +499,29 @@ def summarize_drug(report: DrugConflictReport, top: int = 20) -> str:
                  "it than\n  unpaid prescribers of the same drug. Association, not "
                  "causation.")
     return "\n".join(lines)
+
+
+def synthetic_did_inputs():
+    """Two-period inputs with a planted DiD: newly-paid providers grow DRUGX
+    prescribing by $200k, never-paid by $50k (trend) -> DiD $150k/provider."""
+    rx_prior, rx_post = {}, {}
+    paid_post, paid_prior = set(), set()
+    for i in range(30):                       # treatment: newly paid in post year
+        n = f"t{i}"
+        rx_prior[(n, "DRUGX")] = 100_000
+        rx_post[(n, "DRUGX")] = 300_000       # +200k
+        paid_post.add((n, "DRUGX"))
+    for i in range(30):                       # control: never paid
+        n = f"c{i}"
+        rx_prior[(n, "DRUGX")] = 100_000
+        rx_post[(n, "DRUGX")] = 150_000       # +50k (secular trend)
+    for i in range(5):                        # already paid prior -> excluded
+        n = f"a{i}"
+        rx_prior[(n, "DRUGX")] = 100_000
+        rx_post[(n, "DRUGX")] = 400_000
+        paid_post.add((n, "DRUGX"))
+        paid_prior.add((n, "DRUGX"))
+    return rx_prior, rx_post, paid_post, paid_prior
 
 
 def synthetic_drug_inputs():
