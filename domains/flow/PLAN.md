@@ -86,10 +86,21 @@ Imports use `from core.category import Category` (resolves because
      medicare` (confidence = overpayment ratio, dollars in metadata).
    - Run: `python -m domains.flow.run_coherence --ma` (synthetic) or
      `--ma <contracts.csv>`. Loaders: `load_ma_contracts`, `load_ma_enrollment`.
-   - **NEXT for this piece**: assemble real per-contract inputs from public
-     pieces — enrollment (CPSC) + benchmark (MA rate book county rates) + county
-     FFS per-capita (Geographic Variation PUF) + risk score; cross-check the
-     national total against published RADV / MedPAC figures.
+   - **REAL consumed side DONE** (`load_ffs_geovar` + `assemble_contracts_from_geovar`,
+     `--ma-geovar <ffs_geovar.csv>`): per-state `ffs_per_capita` =
+     `TOT_MDCR_STDZD_PYMT_PC` and `enrollment` = `BENES_MA_CNT` are now REAL CMS
+     data (Original Medicare Geographic Variation PUF, 2014–2024). The denominator
+     of the overpayment claim — the FFS baseline — is no longer assumed. On 2024:
+     51 states, 33.0M enrollees, consumed $417.5B, paid $509.2B (MedPAC params),
+     **overpayment ≈ $91.7B (~22% of FFS, $2,778/enrollee)** — matches MedPAC's
+     ~122%-of-FFS finding; cosmos materializes 51 2-cells in h₂K.
+   - **Paid side still modeled**: `benchmark_per_capita` and `risk_score` use
+     documented MedPAC parameters (1.08 benchmark/FFS, 1.20 coding risk;
+     overridable via `--ma-benchmark-ratio`/`--ma-risk` or per-geo
+     `assemble_contracts_from_geovar(overrides=...)`). **NEXT**: slot in real MA
+     ratebook county benchmarks + measured MA risk scores (CMS ratebook xlsx +
+     risk-score files, outside the GeoVar PUF) to make the paid side real too;
+     cross-check against RADV recoveries.
 
 ### Phase 3 — Conflict of interest + outliers
 4. **Open Payments ↔ Part D 2-cell**: correlate pharma payments to an NPI with

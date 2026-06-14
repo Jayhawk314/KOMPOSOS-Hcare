@@ -8,9 +8,12 @@ from core.category import Category
 
 from domains.flow.medicare_advantage import (
     MAContract, MedicareAdvantageTwoCell, summarize, synthetic_contracts,
-    DEFAULT_CODING_ADJUSTMENT,
+    DEFAULT_CODING_ADJUSTMENT, assemble_contracts_from_geovar,
+    MEDPAC_BENCHMARK_RATIO, MEDPAC_MA_CODING_RISK,
 )
-from domains.flow.ingest import write_fixtures, load_ma_contracts, load_ma_enrollment
+from domains.flow.ingest import (
+    write_fixtures, load_ma_contracts, load_ma_enrollment, load_ffs_geovar,
+)
 
 
 def test_decomposition_identity():
@@ -85,3 +88,37 @@ def test_summarize_runs():
     text = summarize(results)
     assert "OVERPAYMENT" in text
     assert "coding intensity" in text
+
+
+def test_assemble_from_geovar_uses_real_consumed_side(tmp_path):
+    """The consumed side must be the real FFS per-capita x real MA enrollment."""
+    paths = write_fixtures(str(tmp_path))
+    geo = load_ffs_geovar(paths["ffs_geovar"], year=2024, geo_level="State")
+    contracts = assemble_contracts_from_geovar(geo)
+    by_id = {c.contract_id: c for c in contracts}
+    # PR is a territory in the skip set; CA and TX remain.
+    assert set(by_id) == {"CA", "TX"}
+    ca = by_id["CA"]
+    assert ca.enrollment == 3_466_321                 # real MA count
+    assert ca.ffs_per_capita == 13_254.0              # real standardized FFS p.c.
+    assert ca.benchmark_per_capita == 13_254.0 * MEDPAC_BENCHMARK_RATIO
+    assert ca.risk_score == MEDPAC_MA_CODING_RISK
+    # consumed in the 2-cell == enrollment * real FFS per-capita (ffs_risk=1).
+    r = MedicareAdvantageTwoCell().evaluate(ca)
+    assert abs(r.consumed - 3_466_321 * 13_254.0) < 1.0
+    assert r.overpayment > 0
+    assert abs((r.coding_intensity + r.benchmark_spread) - r.overpayment) < 1e-3
+
+
+def test_assemble_from_geovar_overrides(tmp_path):
+    """Real per-geo ratebook/risk inputs can replace the modeled defaults."""
+    paths = write_fixtures(str(tmp_path))
+    geo = load_ffs_geovar(paths["ffs_geovar"], year=2024, geo_level="State")
+    contracts = assemble_contracts_from_geovar(
+        geo, overrides={"CA": {"benchmark_per_capita": 15_000.0, "risk_score": 1.10}})
+    ca = next(c for c in contracts if c.contract_id == "CA")
+    assert ca.benchmark_per_capita == 15_000.0
+    assert ca.risk_score == 1.10
+    # TX keeps the modeled defaults.
+    tx = next(c for c in contracts if c.contract_id == "TX")
+    assert tx.risk_score == MEDPAC_MA_CODING_RISK

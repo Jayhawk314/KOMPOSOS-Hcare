@@ -324,6 +324,60 @@ def load_ma_contracts(path: str):
 
 
 # ---------------------------------------------------------------------------
+# Original Medicare (FFS) Geographic Variation PUF -- the consumed baseline
+# ---------------------------------------------------------------------------
+def load_ffs_geovar(path: str, *, year, geo_level: str = "State",
+                    age_level: str = "All") -> Dict[str, Dict[str, float]]:
+    """CMS Original Medicare Geographic Variation PUF -> per-geo FFS baseline.
+
+    This is the REAL consumed-side input for the Medicare Advantage 2-cell:
+    FFS per-capita is what an MA enrollee would have cost under fee-for-service,
+    measured directly by CMS. Returns ``{geo_desc: {...}}`` with:
+        ffs_pc        TOT_MDCR_PYMT_PC          (FFS Medicare payment per capita)
+        ffs_stdzd_pc  TOT_MDCR_STDZD_PYMT_PC    (price-standardized per capita)
+        ma_cnt        BENES_MA_CNT              (MA enrollees in the geo -- real)
+        ffs_cnt       BENES_OM_CNT              (Original Medicare/FFS enrollees)
+        ma_rate       MA_PRTCPTN_RATE           (MA participation rate)
+
+    ``geo_level`` is one of National / State / County; ``age_level`` one of
+    All / <65 / >=65. State descriptors are 2-letter codes (CA, TX, ...).
+    """
+    out: Dict[str, Dict[str, float]] = {}
+    with _open_text(path) as fh:
+        reader = csv.DictReader(fh)
+        fields = reader.fieldnames or []
+        y_c = _require(fields, ["YEAR"], "year")
+        lvl_c = _require(fields, ["BENE_GEO_LVL"], "geo level")
+        desc_c = _require(fields, ["BENE_GEO_DESC"], "geo description")
+        age_c = _require(fields, ["BENE_AGE_LVL"], "age level")
+        ma_c = _require(fields, ["BENES_MA_CNT"], "MA bene count")
+        pc_c = _require(fields, ["TOT_MDCR_PYMT_PC"], "FFS payment per capita")
+        spc_c = _resolve(fields, ["TOT_MDCR_STDZD_PYMT_PC"])
+        om_c = _resolve(fields, ["BENES_OM_CNT"])
+        rate_c = _resolve(fields, ["MA_PRTCPTN_RATE"])
+        ystr = str(year)
+        for row in reader:
+            if str(row.get(y_c, "")).strip() != ystr:
+                continue
+            if str(row.get(lvl_c, "")).strip() != geo_level:
+                continue
+            if str(row.get(age_c, "")).strip() != age_level:
+                continue
+            geo = str(row.get(desc_c, "")).strip()
+            if not geo:
+                continue
+            ffs_pc = _to_float(row.get(pc_c))
+            out[geo] = {
+                "ffs_pc": ffs_pc,
+                "ffs_stdzd_pc": _to_float(row.get(spc_c)) if spc_c else ffs_pc,
+                "ma_cnt": int(_to_float(row.get(ma_c))),
+                "ffs_cnt": int(_to_float(row.get(om_c))) if om_c else 0,
+                "ma_rate": _to_float(row.get(rate_c)) if rate_c else 0.0,
+            }
+    return out
+
+
+# ---------------------------------------------------------------------------
 # NPPES registry  -- the provider -> peer-group functor's source of truth
 # ---------------------------------------------------------------------------
 def load_nppes(path: str) -> Dict[str, Dict[str, str]]:
@@ -474,5 +528,20 @@ def write_fixtures(directory: str) -> Dict[str, str]:
         "ma_enrollment.csv",
         ["Contract Number", "Plan ID", "Enrollment"],
         [["H1001", "001", 25000], ["H1001", "002", 15000], ["H2002", "001", 120000]],
+    )
+    # FFS Geographic Variation PUF (real consumed baseline for the MA 2-cell).
+    paths["ffs_geovar"] = _w(
+        "ffs_geovar.csv",
+        ["YEAR", "BENE_GEO_LVL", "BENE_GEO_DESC", "BENE_AGE_LVL",
+         "BENES_OM_CNT", "BENES_MA_CNT", "MA_PRTCPTN_RATE",
+         "TOT_MDCR_PYMT_PC", "TOT_MDCR_STDZD_PYMT_PC"],
+        [
+            ["2024", "National", "National", "All", 27732177, 33677969, 0.5484, 13605.51, 12553.26],
+            ["2024", "State", "CA", "All", 2000000, 3466321, 0.60, 14000.0, 13254.0],
+            ["2024", "State", "TX", "All", 1800000, 2505775, 0.55, 13500.0, 14056.0],
+            ["2024", "State", "PR", "All", 50000, 400000, 0.85, 9000.0, 11000.0],   # territory -> skipped
+            ["2024", "State", "CA", "<65", 300000, 400000, 0.50, 16000.0, 15000.0], # wrong age -> ignored
+            ["2023", "State", "CA", "All", 1900000, 3300000, 0.59, 13000.0, 12500.0],# wrong year -> ignored
+        ],
     )
     return paths

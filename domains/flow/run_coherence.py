@@ -200,6 +200,57 @@ def run_ma(contracts_path: Optional[str] = None) -> int:
     return 0
 
 
+def run_ma_geovar(geovar_path: str, year=2024,
+                  benchmark_ratio: Optional[float] = None,
+                  ma_risk: Optional[float] = None) -> int:
+    """MA paid-vs-consumed 2-cell on REAL FFS Geographic Variation data.
+
+    The consumed side (FFS per-capita x real MA enrollment, per state) is real
+    CMS data; the paid side uses documented MedPAC parameters (overridable).
+    Cross-check the national total against MedPAC's published MA overpayment.
+    """
+    from domains.flow.ingest import load_ffs_geovar
+    from domains.flow.medicare_advantage import (
+        MedicareAdvantageTwoCell, assemble_contracts_from_geovar,
+        summarize as ma_summarize,
+        MEDPAC_BENCHMARK_RATIO, MEDPAC_MA_CODING_RISK,
+    )
+
+    br = benchmark_ratio if benchmark_ratio is not None else MEDPAC_BENCHMARK_RATIO
+    rs = ma_risk if ma_risk is not None else MEDPAC_MA_CODING_RISK
+    print(f"loading FFS Geographic Variation PUF (year {year}, by state)...")
+    geovar = load_ffs_geovar(geovar_path, year=year, geo_level="State")
+    contracts = assemble_contracts_from_geovar(
+        geovar, benchmark_ratio=br, ma_risk_score=rs)
+    print(f"  {len(contracts)} states  (consumed=real FFS per-capita x real MA "
+          f"enrollment; paid: benchmark_ratio={br}, ma_risk={rs} [MedPAC])\n")
+
+    cat = Category(db_path=":memory:")
+    cosmos = None
+    try:
+        from core.cosmos import InfinityCosmos
+        cosmos = InfinityCosmos(cat)
+    except Exception:
+        pass
+    engine = MedicareAdvantageTwoCell(category=cat, cosmos=cosmos)
+    results = engine.evaluate_all(contracts)
+    print(ma_summarize(results))
+
+    overpays = [m for m in cat.morphisms() if m.name == "overpays"]
+    two_cells = 0
+    if cosmos is not None:
+        try:
+            two_cells = len(cosmos.homotopy_2_category(rebuild=True).two_cells)
+        except Exception:
+            two_cells = 0
+    print(f"\nCategory: {len(cat.objects())} objects, {len(cat.morphisms())} "
+          f"morphisms ({len(overpays)} overpays edges); {two_cells} 2-cells in h2K")
+    print("\nNOTE: paid-side benchmark/risk are documented MedPAC parameters; "
+          "supply real ratebook benchmarks + measured MA risk scores via "
+          "assemble_contracts_from_geovar(overrides=...) to make them real too.")
+    return 0
+
+
 def run_outliers(service_path: Optional[str] = None) -> int:
     """Yoneda peer-outlier detection on provider billing fingerprints.
 
@@ -275,6 +326,15 @@ def main(argv=None) -> int:
     p.add_argument("--ma", nargs="?", const="", metavar="CSV",
                    help="Medicare Advantage paid-vs-consumed 2-cell; optional "
                         "contracts CSV, else synthetic")
+    p.add_argument("--ma-geovar", metavar="CSV",
+                   help="MA 2-cell on REAL data: CMS FFS Geographic Variation "
+                        "PUF (consumed=real FFS per-capita x real MA enrollment)")
+    p.add_argument("--ma-year", default=2024, type=int,
+                   help="year for --ma-geovar (default 2024)")
+    p.add_argument("--ma-benchmark-ratio", type=float, default=None,
+                   help="paid-side benchmark/FFS ratio (default MedPAC 1.08)")
+    p.add_argument("--ma-risk", type=float, default=None,
+                   help="paid-side MA risk score (default MedPAC 1.20)")
     p.add_argument("--outliers", nargs="?", const="", metavar="CSV",
                    help="Yoneda peer-outlier billing detection; optional CMS "
                         "by-Provider-and-Service CSV, else synthetic")
@@ -289,6 +349,10 @@ def main(argv=None) -> int:
         return 0
     if args.synthetic:
         return run_synthetic()
+    if args.ma_geovar:
+        return run_ma_geovar(args.ma_geovar, year=args.ma_year,
+                             benchmark_ratio=args.ma_benchmark_ratio,
+                             ma_risk=args.ma_risk)
     if args.ma is not None:
         return run_ma(args.ma or None)
     if args.outliers is not None:

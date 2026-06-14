@@ -12,7 +12,7 @@ from core.category import Category
 from domains.flow.ingest import (
     load_provider_service, load_provider_summary, load_part_d,
     load_open_payments, load_usaspending, load_nppes, specialty_map,
-    FlowCategoryBuilder, write_fixtures, _to_float, _resolve,
+    FlowCategoryBuilder, write_fixtures, load_ffs_geovar, _to_float, _resolve,
 )
 from domains.flow.coherence import FlowCoherenceChecker, pushforward
 
@@ -105,3 +105,21 @@ def test_builder_writes_provenance(tmp_path):
     assert len(reports) == 3
     builder.add_nppes(load_nppes(paths["nppes"]))
     assert any(m.name == "has_specialty" for m in cat.morphisms())
+
+
+def test_load_ffs_geovar_filters_year_level_age(tmp_path):
+    paths = _fixtures(tmp_path)
+    geo = load_ffs_geovar(paths["ffs_geovar"], year=2024, geo_level="State")
+    # Only the 2024 / State / All rows: CA, TX, PR (National excluded by level;
+    # the <65 and 2023 CA rows excluded by age/year filters).
+    assert set(geo) == {"CA", "TX", "PR"}
+    assert geo["CA"]["ma_cnt"] == 3_466_321
+    assert geo["CA"]["ffs_stdzd_pc"] == 13_254.0
+    assert geo["TX"]["ffs_pc"] == 13_500.0  # unstandardized retained too
+
+
+def test_load_ffs_geovar_national(tmp_path):
+    paths = _fixtures(tmp_path)
+    geo = load_ffs_geovar(paths["ffs_geovar"], year=2024, geo_level="National")
+    assert geo["National"]["ma_cnt"] == 33_677_969
+    assert geo["National"]["ffs_stdzd_pc"] == 12_553.26

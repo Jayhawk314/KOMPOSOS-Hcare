@@ -49,6 +49,15 @@ from typing import Iterable, List, Optional
 # Statutory minimum MA coding-intensity adjustment (recent years ~5.9%).
 DEFAULT_CODING_ADJUSTMENT = 0.059
 
+# Documented MedPAC parameters for the paid side, used when real per-geo
+# benchmark / risk inputs are not supplied (MedPAC, March 2024 Report to
+# Congress, ch. 11). Both are overridable per call and per geo.
+#   benchmarks average ~108% of local FFS spending,
+#   MA risk scores run ~20% above what the same enrollees would score in FFS
+#   (favorable coding intensity, before the statutory adjustment).
+MEDPAC_BENCHMARK_RATIO = 1.08
+MEDPAC_MA_CODING_RISK = 1.20
+
 
 @dataclass
 class MAContract:
@@ -204,6 +213,76 @@ def summarize(results: List[OverpaymentResult], top: int = 15) -> str:
     if enr:
         lines.append(f"  overpayment per enrollee: ${total_over / enr:,.0f}/yr")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Real-data assembly from the FFS Geographic Variation PUF
+# ---------------------------------------------------------------------------
+# Territories / non-state rows to skip by default (no MA benchmark regime
+# comparable to the 50 states + DC, or tiny/suppressed).
+_NON_STATES = {"PR", "VI", "GU", "MP", "AS", "Unknown", "Foreign", ""}
+
+
+def assemble_contracts_from_geovar(
+    geovar,
+    *,
+    benchmark_ratio: float = MEDPAC_BENCHMARK_RATIO,
+    ma_risk_score: float = MEDPAC_MA_CODING_RISK,
+    ffs_risk: float = 1.0,
+    standardized: bool = True,
+    overrides: Optional[dict] = None,
+    skip=_NON_STATES,
+    min_enrollment: int = 1000,
+) -> List[MAContract]:
+    """Build :class:`MAContract`s from the real FFS Geographic Variation PUF.
+
+    Each geography (state, by default) becomes one "contract" unit for the
+    paid-vs-consumed 2-cell. What is real vs modeled is explicit:
+
+    REAL (CMS Original Medicare Geographic Variation PUF, via
+    ``ingest.load_ffs_geovar``):
+        enrollment     = BENES_MA_CNT             (MA enrollees in the geo)
+        ffs_per_capita = TOT_MDCR_STDZD_PYMT_PC   (what they'd cost in FFS)
+    This is the genuinely hard-to-source denominator of the overpayment claim;
+    it is now real, per-geography, not assumed.
+
+    MODELED (documented MedPAC parameters, overridable, or replaced per-geo via
+    ``overrides``):
+        benchmark_per_capita = ffs_per_capita * benchmark_ratio
+        risk_score           = ma_risk_score
+
+    Supply ``overrides={geo: {"benchmark_per_capita": ..., "risk_score": ...}}``
+    to slot in real MA ratebook benchmarks / measured MA risk scores per geo as
+    they become available (those public pieces live in CMS ratebook xlsx + risk
+    score files outside the GeoVar PUF). The 2-cell math is unchanged; only the
+    provenance of the paid-side inputs improves.
+
+    ``geovar`` is the dict returned by ``load_ffs_geovar``.
+    """
+    overrides = overrides or {}
+    contracts: List[MAContract] = []
+    for geo, rec in geovar.items():
+        if geo in skip:
+            continue
+        enrollment = int(rec.get("ma_cnt", 0))
+        if enrollment < min_enrollment:
+            continue
+        ffs_pc = rec["ffs_stdzd_pc"] if standardized else rec["ffs_pc"]
+        if ffs_pc <= 0:
+            continue
+        ov = overrides.get(geo, {})
+        bm = ov.get("benchmark_per_capita", ffs_pc * benchmark_ratio)
+        rs = ov.get("risk_score", ma_risk_score)
+        contracts.append(MAContract(
+            contract_id=geo,
+            enrollment=enrollment,
+            benchmark_per_capita=bm,
+            ffs_per_capita=ffs_pc,
+            risk_score=rs,
+            ffs_risk=ffs_risk,
+            name=geo,
+        ))
+    return contracts
 
 
 # ---------------------------------------------------------------------------
