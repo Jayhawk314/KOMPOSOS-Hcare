@@ -243,6 +243,29 @@ providers ranked by money) to keep the persistence backend's per-insert cost
 sane; `profile(npi)` returns the unified per-provider view from the joined
 graph. **Status: working on real national data (billing + Part D).**
 
+### 5.6 Conflict-of-interest — "do paid doctors prescribe more?"
+
+🟢 **In plain words:** Drug companies report the money they give doctors (Open
+Payments); Medicare reports what each doctor prescribes (Part D). Put both on the
+same doctor and ask: do the doctors who take the most industry money also
+prescribe the most? On **real 2024 data across 734,802 doctors who appear in
+both**, the answer is yes — there's a clear positive link, and **19,291 doctors
+land in the top tenth of BOTH** (most money received *and* most prescribing).
+Those are the conflict-of-interest candidates worth a closer look. The tool is
+careful to say this is an *association*, not proof that the money caused the
+prescribing.
+
+🔵 **The math:** Two parallel evidence morphisms reach each provider —
+*payment* (pharma → provider, Open Payments $) and *prescribing* (provider →
+drugs, Part D $). As parallel 1-morphisms `provider → influence`, the cosmos
+materializes a **2-cell** per flagged provider (the same construction as the MA
+2-cell). The population signal is the **Spearman rank correlation** between
+payment and prescribing (+0.305 over 734,802 providers in 2024 — modest but
+robust at that n). Providers in the top decile of *both* distributions are
+flagged (19,291 in 2024). **Status: working on real national data (NPI-level);**
+a drug-level refinement (manufacturer → drug → that drug's prescribing) is the
+documented next step.
+
 ---
 
 ## 6. The findings ledger (real numbers)
@@ -252,7 +275,8 @@ graph. **Status: working on real national data (billing + Part D).**
 | Billing line-items vs per-doctor totals (2024) | $97.3B vs $120.1B, ~$20B gap | **real, national** | One-directional → data-suppression artifact, **not** fraud |
 | Medicare Advantage overpayment (2024) | **~$107B** ($3,250/enrollee) | **real consumed + real benchmark** | MA risk score is the one modeled input |
 | Same, calibrated to MedPAC's coding figure | **$93.8B = 1.12× MedPAC** → CONSISTENT | **validated** | within 12% of the official estimate |
-| Doctors who both bill & prescribe (2024) | **861,300** of 1.85M | **real, national** | the join is real; conflict detector is next |
+| Doctors who both bill & prescribe (2024) | **861,300** of 1.85M | **real, national** | the join that makes it one map |
+| Pharma payment ↔ prescribing link (2024) | **+0.305** Spearman over 734,802 doctors; **19,291** flagged | **real, national** | association, not causation; NPI-level (not drug-matched yet) |
 | Peer-outlier & strategic-gaming detectors | — | **working, synthetic data** | wired for real data, not yet run at scale |
 
 **The point of the ledger is not one big scary number.** It's a *repeatable,
@@ -307,7 +331,7 @@ join keys lives in `sources/registry.py`.
 
 ```bash
 # Confirm everything works (no downloads needed)
-python -m pytest domains/flow/tests/ -q          # 65 tests
+python -m pytest domains/flow/tests/ -q          # 71 tests
 
 # Each detector on built-in demo data:
 python -m domains.flow.run_coherence --synthetic     # conservation
@@ -315,6 +339,7 @@ python -m domains.flow.run_coherence --ma            # MA overpayment
 python -m domains.flow.run_coherence --outliers      # Yoneda peer outliers
 python -m domains.flow.run_coherence --nash-sheaf    # strategic gaming
 python -m domains.flow.run_coherence --coload        # the NPI join
+python -m domains.flow.run_coherence --conflict      # Open Payments x Part D
 
 # On real downloaded data (examples):
 python -m domains.flow.run_coherence --service <by-service.csv> --summary <by-provider.csv>
@@ -337,10 +362,10 @@ peers." Here's what plugging in more data unlocks:
 
 🔵 **The math + the build path:**
 
-1. **Conflict-of-interest 2-cell (next build).** Correlate Open Payments (pharma
-   $ to a doctor) with that doctor's Part D prescribing of the payer's drugs — a
-   parallel-morphism 2-cell on the NPI spine that's already joined (Section 5.5).
-   *Solution it enables:* flag prescribing driven by payments, not need.
+1. **Conflict-of-interest 2-cell (✅ built, Section 5.6).** Done at NPI level on
+   real national data. *Refinement:* match a payment's manufacturer to the drugs
+   it makes, then to that provider's prescribing of *those* drugs (drug-level
+   2-cell). *Solution it enables:* flag prescribing driven by payments, not need.
 
 2. **Vertical conservation (the big one).** Today's checks are *horizontal* (two
    views of one layer). Connect the layers — federal $ → program → plan →

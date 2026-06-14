@@ -128,8 +128,16 @@ Imports use `from core.category import Category` (resolves because
      benchmark-vs-standardized-FFS normalization.
 
 ### Phase 3 — Conflict of interest + outliers
-4. **Open Payments ↔ Part D 2-cell**: correlate pharma payments to an NPI with
-   that NPI's prescribing of the payer's drugs.
+4. **Open Payments ↔ Part D 2-cell** — ✅ DONE (`conflict.py`, `--conflict`).
+   Parallel evidence morphisms `provider → influence` (payment vs prescribing);
+   cosmos materializes a 2-cell per flagged provider (COG Tier 4). NPI-level v1:
+   flags top-decile-of-both, reports the population Spearman correlation; stdlib
+   stats; Category writes capped (`max_writes`) so it scales. Third real source
+   (Open Payments, 8.9GB general-payments CSV from openpaymentsdata.cms.gov) now
+   on the NPI spine. **Real 2024 run**: 734,802 providers in both, Spearman
+   **+0.305** (paid providers prescribe more), **19,291 flagged** top-decile-of-
+   both, 500 2-cells written. **NEXT (drug-level refinement)**: match a payment's
+   manufacturer → its drugs → that provider's prescribing of those drugs.
 5. **Yoneda fingerprint outliers**: a provider's HCPCS/drug bag vs peer
    sheaf-section (specialty + region); flag divergence as overbilling risk.
    Reuse `core/formal_yoneda.py` (`yoneda_similarity`, transfer threshold).
@@ -185,7 +193,8 @@ layer functor. Composite ≠ sum of parts across layers = the leak. Needs 5a fir
 
 **5d. Detectors still to build or port** (see Math Arsenal below for what each
 finds):
-   - Open Payments ↔ Part D conflict-of-interest 2-cell (designed, not built).
+   - Open Payments ↔ Part D conflict-of-interest 2-cell ✅ DONE (NPI-level;
+     drug-level refinement remains).
    - Ricci curvature (bottleneck intermediaries) — port from GRID/III-CORE.
    - Persistent homology (anomalies over time) — port; needs multi-year data.
    - Horn-filling / retrodiction (infer missing transactions) — port PHARM/SEC.
