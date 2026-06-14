@@ -14,6 +14,7 @@ from domains.flow.ingest import (
     load_open_payments, load_usaspending, load_nppes, specialty_map,
     FlowCategoryBuilder, write_fixtures, load_ffs_geovar, load_ma_ratebook,
     load_ma_risk, load_ssa_fips_crosswalk, load_county_ma_enrollment,
+    load_open_payments_by_drug, load_part_d_by_drug, _norm_drug,
     _to_float, _resolve,
 )
 from domains.flow.coherence import FlowCoherenceChecker, pushforward
@@ -167,6 +168,27 @@ def test_load_county_ma_enrollment(tmp_path):
     assert enr["48001"] == 2000
     # State/National rows are not county-level and must not appear.
     assert "06" not in enr
+
+
+def test_load_open_payments_by_drug_normalizes_and_skips_devices(tmp_path):
+    paths = _fixtures(tmp_path)
+    pay = load_open_payments_by_drug(paths["op_by_drug"])
+    assert pay[("100", "ELIQUIS")] == 6000.0      # two rows summed, normalized
+    assert pay[("101", "ELIQUIS")] == 8000.0
+    assert ("102", "SOMESTENT") not in pay         # device row skipped
+
+
+def test_load_part_d_by_drug_keep_filter(tmp_path):
+    paths = _fixtures(tmp_path)
+    rx = load_part_d_by_drug(paths["partd_by_drug"], keep_drugs={"ELIQUIS"})
+    assert rx[("100", "ELIQUIS")] == 900000.0
+    assert rx[("103", "ELIQUIS")] == 90000.0       # case-normalized "eliquis"
+    assert ("104", "OZEMPIC") not in rx            # filtered out by keep_drugs
+
+
+def test_norm_drug():
+    assert _norm_drug("  Eliquis ") == "ELIQUIS"
+    assert _norm_drug("Foo  Bar") == "FOO BAR"
 
 
 def test_ratebook_enrollment_weighted(tmp_path):

@@ -228,6 +228,78 @@ def load_open_payments(path: str, *, source: str = "open_payments") -> Section:
 
 
 # ---------------------------------------------------------------------------
+# Drug-level joins: Open Payments (by drug) and Part D (by Provider and Drug)
+# ---------------------------------------------------------------------------
+def _norm_drug(s: object) -> str:
+    """Normalize a drug/brand name for cross-source matching."""
+    t = " ".join(str(s or "").strip().upper().split())
+    return t
+
+
+def load_open_payments_by_drug(path: str, *, only_drug: bool = True):
+    """Open Payments general payments -> ``{(npi, drug): payment_usd}``.
+
+    Uses the primary associated product (slot 1). When ``only_drug`` is set,
+    keeps rows flagged as Drug/Biological (skips devices/supplies, which have no
+    Part D analogue). Drug names are normalized for matching to Part D brands.
+    """
+    out: Dict[tuple, float] = {}
+    with _open_text(path) as fh:
+        reader = csv.DictReader(fh)
+        fields = reader.fieldnames or []
+        npi_c = _require(fields, _NPI, "NPI")
+        amt_c = _require(fields, ["Total_Amount_of_Payment_USDollars",
+                                  "total_amount_of_payment_usdollars"], "payment amount")
+        name_c = _require(fields, [
+            "Name_of_Drug_or_Biological_or_Device_or_Medical_Supply_1"], "drug name")
+        ind_c = _resolve(fields, [
+            "Indicate_Drug_or_Biological_or_Device_or_Medical_Supply_1"])
+        for row in reader:
+            npi = str(row.get(npi_c, "")).strip()
+            if not npi:
+                continue
+            if only_drug and ind_c:
+                kind = str(row.get(ind_c, "")).strip().lower()
+                if kind not in ("drug", "biological"):
+                    continue
+            drug = _norm_drug(row.get(name_c))
+            if not drug:
+                continue
+            key = (npi, drug)
+            out[key] = out.get(key, 0.0) + _to_float(row.get(amt_c))
+    return out
+
+
+def load_part_d_by_drug(path: str, *, keep_drugs=None):
+    """Part D Prescribers by Provider and Drug -> ``{(npi, drug): drug_cost}``.
+
+    ``keep_drugs`` (a set of normalized brand names) restricts the load to drugs
+    that appear in Open Payments -- keeps memory bounded and the join relevant.
+    Brand names are normalized to match ``load_open_payments_by_drug``.
+    """
+    out: Dict[tuple, float] = {}
+    with _open_text(path) as fh:
+        reader = csv.DictReader(fh)
+        fields = reader.fieldnames or []
+        npi_c = _require(fields, _NPI, "NPI")
+        brnd_c = _require(fields, ["Brnd_Name", "brand_name"], "brand name")
+        cost_c = _require(fields, ["Tot_Drug_Cst", "total_drug_cost"],
+                          "total drug cost")
+        for row in reader:
+            npi = str(row.get(npi_c, "")).strip()
+            if not npi:
+                continue
+            drug = _norm_drug(row.get(brnd_c))
+            if not drug:
+                continue
+            if keep_drugs is not None and drug not in keep_drugs:
+                continue
+            key = (npi, drug)
+            out[key] = out.get(key, 0.0) + _to_float(row.get(cost_c))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # USASpending HHS obligations  -- keyed by recipient org (UEI)
 # ---------------------------------------------------------------------------
 def load_usaspending(path: str, *, source: str = "usaspending_hhs") -> Section:
@@ -752,6 +824,30 @@ def write_fixtures(directory: str) -> Dict[str, str]:
         "ma_risk.csv",
         ["state", "risk_score"],
         [["CA", 1.15], ["TX", 1.25]],
+    )
+    # Open Payments with drug detail (for the drug-level conflict join).
+    paths["op_by_drug"] = _w(
+        "op_by_drug.csv",
+        ["Covered_Recipient_NPI", "Total_Amount_of_Payment_USDollars",
+         "Indicate_Drug_or_Biological_or_Device_or_Medical_Supply_1",
+         "Name_of_Drug_or_Biological_or_Device_or_Medical_Supply_1"],
+        [
+            ["100", 5000, "Drug", "Eliquis"],
+            ["100", 1000, "Drug", "Eliquis"],          # summed -> 6000 for (100,ELIQUIS)
+            ["101", 8000, "Drug", "Eliquis"],
+            ["102", 2000, "Device", "SomeStent"],       # device -> skipped
+        ],
+    )
+    # Part D by Provider AND Drug (brand-keyed).
+    paths["partd_by_drug"] = _w(
+        "partd_by_drug.csv",
+        ["Prscrbr_NPI", "Brnd_Name", "Gnrc_Name", "Tot_Drug_Cst"],
+        [
+            ["100", "ELIQUIS", "apixaban", 900000],
+            ["101", "Eliquis", "apixaban", 800000],
+            ["103", "eliquis", "apixaban", 90000],      # unpaid prescriber
+            ["104", "Ozempic", "semaglutide", 500000],  # different drug
+        ],
     )
     # SSA<->FIPS crosswalk: ratebook SSA codes -> GeoVar county FIPS codes.
     paths["ssa_fips"] = _w(

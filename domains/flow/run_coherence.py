@@ -437,6 +437,57 @@ def run_conflict(args) -> int:
     return 0
 
 
+def run_conflict_drug(args) -> int:
+    """Drug-level Open Payments x Part D conflict (payment about a drug vs
+    prescribing of that drug). Real files if given, else synthetic.
+    """
+    from domains.flow.conflict import (
+        DrugLevelConflict, summarize_drug, synthetic_drug_inputs,
+    )
+    cat = Category(db_path=":memory:")
+    cosmos = None
+    try:
+        from core.cosmos import InfinityCosmos
+        cosmos = InfinityCosmos(cat)
+    except Exception:
+        pass
+
+    if args.open_payments and args.part_d_drug:
+        from domains.flow.ingest import (
+            load_open_payments_by_drug, load_part_d_by_drug,
+        )
+        print(f"loading Open Payments by drug {args.open_payments} ...", flush=True)
+        payments = load_open_payments_by_drug(args.open_payments)
+        drugs = {d for (_n, d) in payments}
+        print(f"  {len(payments):,} (npi,drug) payment pairs; {len(drugs):,} drugs",
+              flush=True)
+        print(f"loading Part D by drug {args.part_d_drug} (filtered to paid drugs) ...",
+              flush=True)
+        prescribing = load_part_d_by_drug(args.part_d_drug, keep_drugs=drugs)
+        print(f"  {len(prescribing):,} (npi,drug) prescribing pairs\n", flush=True)
+        engine = DrugLevelConflict(category=cat, cosmos=cosmos)
+    else:
+        payments, prescribing = synthetic_drug_inputs()
+        print("synthetic drug-level inputs (use --open-payments + --part-d-drug "
+              "for real data)\n")
+        engine = DrugLevelConflict(category=cat, cosmos=cosmos, min_group=3,
+                                   min_payment=100, min_prescribing=10_000)
+
+    report = engine.analyze(payments, prescribing)
+    print(summarize_drug(report))
+
+    two_cells = 0
+    if cosmos is not None:
+        try:
+            two_cells = len(cosmos.homotopy_2_category(rebuild=True).two_cells)
+        except Exception:
+            two_cells = 0
+    risks = [m for m in cat.morphisms() if m.name == "drug_conflict_risk"]
+    print(f"\nflagged (provider,drug) pairs: {len(report.flagged):,}  "
+          f"(wrote {len(risks)} to Category, {two_cells} 2-cells in h2K)")
+    return 0
+
+
 def run_nash_sheaf() -> int:
     """Nash sheaf: cross-market strategic-gaming detection (synthetic demo)."""
     from domains.flow.nash_sheaf import (
@@ -510,6 +561,11 @@ def main(argv=None) -> int:
     p.add_argument("--conflict", action="store_true",
                    help="Open Payments x Part D conflict-of-interest 2-cell "
                         "(uses --open-payments + --part-d, else synthetic)")
+    p.add_argument("--conflict-drug", action="store_true",
+                   help="DRUG-level conflict: payment about a drug vs prescribing "
+                        "of that drug (uses --open-payments + --part-d-drug)")
+    p.add_argument("--part-d-drug", dest="part_d_drug", metavar="CSV",
+                   help="Part D Prescribers by Provider AND Drug CSV")
     p.add_argument("--coload", action="store_true",
                    help="NPI co-load: join billing + Part D + Open Payments + "
                         "NPPES into one category on the NPI spine (uses "
@@ -541,6 +597,8 @@ def main(argv=None) -> int:
         return run_ma(args.ma or None)
     if args.outliers is not None:
         return run_outliers(args.outliers or None)
+    if args.conflict_drug:
+        return run_conflict_drug(args)
     if args.conflict:
         return run_conflict(args)
     if args.coload:

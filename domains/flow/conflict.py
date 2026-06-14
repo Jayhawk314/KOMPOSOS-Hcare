@@ -218,6 +218,194 @@ def summarize(report: ConflictReport, top: int = 15) -> str:
     return "\n".join(lines)
 
 
+@dataclass
+class DrugLift:
+    drug: str
+    lift: float                 # mean prescribing (paid) / mean prescribing (unpaid)
+    n_paid: int
+    n_unpaid: int
+    mean_paid: float
+    mean_unpaid: float
+    total_rx: float
+    total_pay: float
+
+
+@dataclass
+class DrugConflictResult:
+    npi: str
+    drug: str
+    payment: float
+    prescribing: float
+    drug_lift: float            # the lift for this pair's drug
+
+
+@dataclass
+class DrugConflictReport:
+    n_matched_pairs: int        # (npi, drug) present in BOTH sources
+    n_drugs: int                # drugs with enough paid & unpaid prescribers
+    correlation: float          # Spearman over matched pairs
+    median_lift: float
+    weighted_lift: float        # prescribing-weighted mean lift
+    top_drugs: List[DrugLift] = field(default_factory=list)
+    flagged: List[DrugConflictResult] = field(default_factory=list)
+
+
+class DrugLevelConflict:
+    """Drug-level conflict: does a payment ABOUT a drug track prescribing OF it?
+
+    Sharper than the NPI-level detector: it matches a payment's specific drug to
+    that provider's prescribing of the *same* drug, and compares — per drug —
+    providers paid about it against unpaid prescribers of it (the **lift**).
+    A lift > 1 means paid providers prescribe that drug more. Categorically, for
+    a (provider, drug) pair the *payment* and *prescribing* morphisms are
+    parallel `provider → drug:<d>` (same source AND target), so the cosmos
+    materializes a genuine 2-cell per flagged pair.
+    """
+
+    def __init__(self, category=None, cosmos=None, *,
+                 min_group: int = 5, min_payment: float = 100.0,
+                 min_prescribing: float = 10_000.0, max_writes: int = 500) -> None:
+        self.category = category
+        self.cosmos = cosmos
+        self.min_group = min_group
+        self.min_payment = min_payment
+        self.min_prescribing = min_prescribing
+        self.max_writes = max_writes
+
+    def analyze(self, payments_by_drug: Mapping[tuple, float],
+                prescribing_by_drug: Mapping[tuple, float]) -> DrugConflictReport:
+        import statistics
+        from collections import defaultdict
+
+        rx_by_drug = defaultdict(dict)        # drug -> {npi: prescribing $}
+        for (npi, drug), cost in prescribing_by_drug.items():
+            rx_by_drug[drug][npi] = cost
+        paid_by_drug = defaultdict(set)       # drug -> {npi paid about it}
+        pay_for_drug = defaultdict(float)
+        for (npi, drug), amt in payments_by_drug.items():
+            paid_by_drug[drug].add(npi)
+            pay_for_drug[drug] += amt
+
+        lifts: List[DrugLift] = []
+        for drug, rx in rx_by_drug.items():
+            paid = paid_by_drug.get(drug, set())
+            paid_vals = [c for n, c in rx.items() if n in paid]
+            unpaid_vals = [c for n, c in rx.items() if n not in paid]
+            if len(paid_vals) < self.min_group or len(unpaid_vals) < self.min_group:
+                continue
+            mp = statistics.fmean(paid_vals)
+            mu = statistics.fmean(unpaid_vals)
+            if mu <= 0:
+                continue
+            lifts.append(DrugLift(drug, mp / mu, len(paid_vals), len(unpaid_vals),
+                                  mp, mu, sum(rx.values()), pay_for_drug.get(drug, 0.0)))
+
+        matched = [k for k in payments_by_drug if k in prescribing_by_drug]
+        if matched:
+            corr = _spearman([payments_by_drug[k] for k in matched],
+                             [prescribing_by_drug[k] for k in matched])
+        else:
+            corr = 0.0
+
+        median_lift = statistics.median([l.lift for l in lifts]) if lifts else 0.0
+        tot_w = sum(l.total_rx for l in lifts)
+        weighted_lift = (sum(l.lift * l.total_rx for l in lifts) / tot_w) if tot_w else 0.0
+
+        flagged = [
+            DrugConflictResult(npi, drug, payments_by_drug[(npi, drug)],
+                               prescribing_by_drug[(npi, drug)],
+                               next((l.lift for l in lifts if l.drug == drug), 0.0))
+            for (npi, drug) in matched
+            if payments_by_drug[(npi, drug)] >= self.min_payment
+            and prescribing_by_drug[(npi, drug)] >= self.min_prescribing
+        ]
+        flagged.sort(key=lambda r: -r.prescribing)
+
+        report = DrugConflictReport(
+            n_matched_pairs=len(matched),
+            n_drugs=len(lifts), correlation=corr,
+            median_lift=median_lift, weighted_lift=weighted_lift,
+            top_drugs=sorted(lifts, key=lambda l: -l.total_pay)[:25],
+            flagged=flagged,
+        )
+        if self.category is not None:
+            for r in flagged[:self.max_writes]:
+                self._to_category(r)
+        return report
+
+    def _to_category(self, r: DrugConflictResult) -> None:
+        cat = self.category
+        prov = f"npi:{r.npi}"
+        drug = f"drug:{r.drug}"
+        if cat.get(prov) is None:
+            cat.add(prov, type_name="provider")
+        if cat.get(drug) is None:
+            cat.add(drug, type_name="drug")
+        # Parallel morphisms provider -> drug:<d>: payment-about vs prescribing-of.
+        # Names are (npi, drug)-unique so the cosmos materializes a distinct
+        # 2-cell per pair (it keys auto-detected 2-cells by morphism name).
+        tag = f"{r.npi}::{r.drug}"
+        pay_mor = cat.connect(prov, drug, name=f"paid_about::{tag}",
+                              confidence=1.0, kind="payment",
+                              amount=round(r.payment, 2))
+        rx_mor = cat.connect(prov, drug, name=f"prescribes::{tag}",
+                             confidence=1.0, kind="prescribing",
+                             amount=round(r.prescribing, 2))
+        cat.add("pharma_influence", type_name="risk")
+        cat.connect(prov, "pharma_influence", name="drug_conflict_risk",
+                    confidence=round(min(1.0, r.drug_lift / 10.0), 4),
+                    drug=r.drug, payment=round(r.payment, 2),
+                    prescribing=round(r.prescribing, 2), drug_lift=round(r.drug_lift, 3))
+        if self.cosmos is not None:
+            try:
+                self.cosmos.add_two_cell(
+                    f"drug_conflict::{r.npi}::{r.drug}", rx_mor.id, pay_mor.id,
+                    data={"drug": r.drug, "payment": r.payment,
+                          "prescribing": r.prescribing, "lift": r.drug_lift})
+            except Exception:
+                pass
+
+
+def summarize_drug(report: DrugConflictReport, top: int = 20) -> str:
+    lines = []
+    lines.append("Drug-level Open Payments x Part D conflict (payment ABOUT a drug")
+    lines.append("vs prescribing OF that drug)")
+    lines.append("=" * 72)
+    lines.append(f"  matched (provider, drug) pairs: {report.n_matched_pairs:,}")
+    lines.append(f"  drugs with paid & unpaid prescriber groups: {report.n_drugs:,}")
+    lines.append(f"  payment<->prescribing rank corr on matched pairs: "
+                 f"{report.correlation:+.3f}")
+    lines.append(f"  MEDIAN per-drug lift (paid vs unpaid prescribing): "
+                 f"{report.median_lift:.2f}x")
+    lines.append(f"  prescribing-weighted lift: {report.weighted_lift:.2f}x")
+    lines.append("")
+    lines.append("  top drugs by industry payment  (lift = paid/unpaid mean Rx $):")
+    for l in report.top_drugs[:top]:
+        lines.append(
+            f"    {l.drug[:28]:<28} lift {l.lift:>6.2f}x  "
+            f"paid n={l.n_paid:>6,} (${l.mean_paid:>12,.0f})  "
+            f"unpaid n={l.n_unpaid:>7,} (${l.mean_unpaid:>11,.0f})")
+    lines.append("-" * 72)
+    lines.append("  lift > 1 means providers paid about a drug prescribe MORE of "
+                 "it than\n  unpaid prescribers of the same drug. Association, not "
+                 "causation.")
+    return "\n".join(lines)
+
+
+def synthetic_drug_inputs():
+    """Payments-by-drug + prescribing-by-drug with a planted lift for one drug."""
+    # DRUGX: paid providers (p1,p2,p3) prescribe much more than unpaid (u1..u6).
+    payments = {("p1", "DRUGX"): 5000, ("p2", "DRUGX"): 8000,
+                ("p3", "DRUGX"): 6000, ("p1", "DRUGY"): 1000}
+    prescribing = {
+        ("p1", "DRUGX"): 900_000, ("p2", "DRUGX"): 800_000, ("p3", "DRUGX"): 850_000,
+        ("u1", "DRUGX"): 90_000, ("u2", "DRUGX"): 80_000, ("u3", "DRUGX"): 70_000,
+        ("u4", "DRUGX"): 100_000, ("u5", "DRUGX"): 60_000, ("u6", "DRUGX"): 75_000,
+        ("p1", "DRUGY"): 50_000,
+    }
+    return payments, prescribing
+
+
 def synthetic_inputs():
     """Payments + prescribing with a deliberate paid-and-high-prescribing set."""
     payments = {

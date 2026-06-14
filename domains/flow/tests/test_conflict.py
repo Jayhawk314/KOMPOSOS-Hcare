@@ -8,6 +8,7 @@ from core.category import Category
 
 from domains.flow.conflict import (
     ConflictDetector, summarize, synthetic_inputs, _spearman, _percentiles,
+    DrugLevelConflict, summarize_drug, synthetic_drug_inputs,
 )
 
 
@@ -65,3 +66,45 @@ def test_summarize_runs():
     text = summarize(rep)
     assert "conflict-of-interest" in text
     assert "Spearman" in text
+
+
+# -- drug-level ------------------------------------------------------------
+def test_drug_level_lift_detects_planted_signal():
+    payments, prescribing = synthetic_drug_inputs()
+    rep = DrugLevelConflict(min_group=3).analyze(payments, prescribing)
+    assert rep.n_drugs == 1                       # only DRUGX has both groups
+    drugx = rep.top_drugs[0]
+    assert drugx.drug == "DRUGX"
+    # paid mean 850k / unpaid mean ~79k -> lift ~10.7x
+    assert drugx.lift > 5.0
+    assert rep.median_lift > 5.0
+
+
+def test_drug_level_flags_and_2cells():
+    payments, prescribing = synthetic_drug_inputs()
+    cat = Category(db_path=":memory:")
+    cosmos = None
+    try:
+        from core.cosmos import InfinityCosmos
+        cosmos = InfinityCosmos(cat)
+    except Exception:
+        pass
+    rep = DrugLevelConflict(category=cat, cosmos=cosmos, min_group=3,
+                            min_payment=100, min_prescribing=10_000).analyze(
+        payments, prescribing)
+    # The three paid DRUGX prescribers are flagged (p1,p2,p3).
+    flagged_npis = {r.npi for r in rep.flagged}
+    assert {"p1", "p2", "p3"} <= flagged_npis
+    # One summary risk edge per flagged PROVIDER (p1 flagged for 2 drugs -> 1 edge).
+    risks = [m for m in cat.morphisms() if m.name == "drug_conflict_risk"]
+    assert len(risks) == len(flagged_npis)
+    # One 2-cell per flagged (provider, drug) PAIR.
+    if cosmos is not None:
+        h2k = cosmos.homotopy_2_category(rebuild=True)
+        assert len(h2k.two_cells) == len(rep.flagged)
+
+
+def test_drug_summary_runs():
+    payments, prescribing = synthetic_drug_inputs()
+    rep = DrugLevelConflict(min_group=3).analyze(payments, prescribing)
+    assert "per-drug lift" in summarize_drug(rep)
