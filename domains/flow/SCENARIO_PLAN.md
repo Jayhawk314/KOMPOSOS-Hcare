@@ -139,7 +139,31 @@ truth.
 
 ## 6. Phased roadmap
 
-- **Phase A — Scenario core.** `scenario.py`: `PolicyLevers` dataclass; a
+- **Phase A — Scenario core. ✅ DONE (2026-06-14).** `domains/flow/scenario.py`:
+  `PolicyLevers` dataclass; `BehavioralModel` with `upcoding()/risk_score()`
+  (generalizes `local_nash_intensity` — `p* = g/(g+d)`, `er = 1+κ·p*`) making the
+  MA risk score **endogenous** to the levers; `ScenarioEngine.run(levers)` reuses
+  the validated 2-cell math in `medicare_advantage.py`. `BehavioralModel.calibrate`
+  solves `base_deter` by bisection so the **baseline reproduces the forensic
+  number** — the gate. CLI: `--scenario` (synthetic) /
+  `--scenario --ma-geovar … --ma-ratebook … --ma-crosswalk …` (real).
+  - **Gate PASSED on real 2024 data:** forensic baseline (fixed risk 1.20) =
+    **$107.3B**; calibrated endogenous baseline = **$107.3B, mean coding
+    intensity 1.200, gate error 0.00%** (`base_deter≈0.034`, κ=0.30, elasticity=1).
+  - **Directional responses (real data, equilibrium deltas vs baseline):**
+    coding adj 20% −$81.5B · audit 5× −$40.1B (mean risk 1.20→1.11) · RADV
+    penalty ×3 −$26.5B · benchmark cap @100% FFS −$133.8B (headroom→0 ⇒ coding
+    incentive vanishes, risk→1.00, MA falls below FFS) · combined −$135.9B.
+  - Honest decomposition surfaced: the statutory **coding-adjustment** lever acts
+    mostly through the *mechanical haircut* on realized `er` (big $ move, small
+    `p*` move), while **audit/penalty** act through *behavioral deterrence* (move
+    `p*`/mean risk directly). The model separates the two — a feature, not a bug.
+  - 11 new tests in `tests/test_scenario.py` (gate + monotonicity per lever);
+    suite **114 passed**.
+  - **Next (Phase B):** the lever set and `compare()` already exist; remaining is
+    real per-market deterrence (Kan, Phase C) and the premium proxy (Phase D).
+
+- **Phase A (original spec).** `scenario.py`: `PolicyLevers` dataclass; a
   `best_response(levers, market)` Nash solver (generalize `local_nash_intensity`)
   making `er` endogenous; recompute MA outcomes on real GeoVar/ratebook;
   **calibrate baseline to the known number** (validation gate). Tests.

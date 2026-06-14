@@ -295,6 +295,83 @@ def run_ma_geovar(geovar_path: str, year=2024,
     return 0
 
 
+def run_scenario(args) -> int:
+    """THE POLICY-SCENARIO ENGINE (the pivot): coding intensity is endogenous.
+
+    Builds real markets (FFS GeoVar + ratebook benchmark), calibrates the
+    inspection-game baseline to the validated forensic overpayment (the gate),
+    then shows the equilibrium response of overpayment to each policy lever.
+    With --ma-geovar present it runs on REAL data; else a synthetic-market demo.
+    """
+    from domains.flow.medicare_advantage import (
+        MedicareAdvantageTwoCell, assemble_contracts_from_geovar,
+    )
+    from domains.flow.scenario import (
+        markets_from_contracts, synthetic_markets, BehavioralModel,
+        ScenarioEngine, PolicyLevers, v1_scenarios, compare,
+    )
+
+    if args.ma_geovar:
+        from domains.flow.ingest import (
+            load_ffs_geovar, load_ma_ratebook, load_ssa_fips_crosswalk,
+            load_county_ma_enrollment,
+        )
+        print("loading real markets (FFS GeoVar + MA ratebook)...", flush=True)
+        geo = load_ffs_geovar(args.ma_geovar, year=args.ma_year, geo_level="State")
+        overrides: dict = {}
+        if args.ma_ratebook:
+            weights = None
+            if args.ma_crosswalk:
+                xw = load_ssa_fips_crosswalk(args.ma_crosswalk)
+                enr = load_county_ma_enrollment(args.ma_geovar, year=args.ma_year)
+                weights = {s: enr.get(f, 0) for s, f in xw.items()}
+            for s, bm in load_ma_ratebook(args.ma_ratebook, bonus=args.ma_bonus,
+                                          weights=weights).items():
+                overrides.setdefault(s, {})["benchmark_per_capita"] = bm
+        contracts = assemble_contracts_from_geovar(geo, overrides=overrides)
+        markets = markets_from_contracts(contracts)
+        src = f"REAL ({len(markets)} states, 2024 GeoVar + ratebook)"
+    else:
+        markets = synthetic_markets()
+        src = "synthetic markets (use --ma-geovar [...] for real data)"
+
+    # The validation gate: the forensic total on these exact markets (fixed 1.20).
+    forensic = MedicareAdvantageTwoCell().evaluate_all(
+        assemble := [m_to_contract(m) for m in markets])
+    target = sum(r.overpayment for r in forensic)
+    print(f"  markets: {src}")
+    print(f"  forensic baseline (fixed MedPAC risk 1.20): "
+          f"${target/1e9:,.1f}B  <- calibration target\n", flush=True)
+
+    model = BehavioralModel.calibrate(markets, target_overpayment=target)
+    engine = ScenarioEngine(markets, model)
+    base = engine.run(PolicyLevers.baseline())
+    gate_err = abs(base.overpayment - target) / target if target else 0.0
+    print(f"  calibrated base_deter={model.base_deter:.5f}  "
+          f"(elasticity={model.elasticity}, kappa={model.kappa})")
+    print(f"  baseline equilibrium: ${base.overpayment/1e9:,.1f}B, "
+          f"mean coding intensity {base.mean_risk:.3f}  "
+          f"[gate error {gate_err:.2%}]\n", flush=True)
+    if gate_err > 0.01:
+        print("  WARNING: baseline does not reproduce the forensic number; "
+              "the model is mis-calibrated.\n")
+
+    print(compare(engine, v1_scenarios()))
+    print("\nHonest boundary: dollars + incentives are the credible output; "
+          "premiums are a\nstated proxy (not yet computed); patient health is "
+          "out of scope (no outcome data\nin the money graph). This is a "
+          "what-if calculator, calibrated at baseline -- a\nmodel, not a forecast.")
+    return 0
+
+
+def m_to_contract(m):
+    """A scenario Market at the fixed MedPAC risk -- the forensic comparison point."""
+    from domains.flow.medicare_advantage import MAContract, MEDPAC_MA_CODING_RISK
+    return MAContract(m.geo, m.enrollment, m.benchmark_per_capita,
+                      m.ffs_per_capita, risk_score=MEDPAC_MA_CODING_RISK,
+                      ffs_risk=m.ffs_risk, name=m.geo)
+
+
 def run_outliers(service_path: Optional[str] = None) -> int:
     """Yoneda peer-outlier detection on provider billing fingerprints.
 
@@ -702,6 +779,11 @@ def main(argv=None) -> int:
                         "by-Provider-and-Service CSV, else synthetic")
     p.add_argument("--nash-sheaf", action="store_true",
                    help="cross-market strategic-gaming detection (Nash sheaf)")
+    p.add_argument("--scenario", action="store_true",
+                   help="THE POLICY-SCENARIO ENGINE: coding intensity endogenous "
+                        "(Nash best response to the levers), calibrated to the "
+                        "forensic baseline, then policy-lever comparison. Real "
+                        "with --ma-geovar [--ma-ratebook --ma-crosswalk], else synthetic")
     p.add_argument("--hospital", nargs="?", const="", metavar="CSV",
                    help="hospital price coherence ('same DRG, different price'); "
                         "optional Medicare Inpatient PUF CSV, else synthetic")
@@ -766,6 +848,8 @@ def main(argv=None) -> int:
         return run_daily(args)
     if args.ledger:
         return run_ledger(args)
+    if args.scenario:
+        return run_scenario(args)
     if args.ma_geovar:
         return run_ma_geovar(args.ma_geovar, year=args.ma_year,
                              benchmark_ratio=args.ma_benchmark_ratio,
