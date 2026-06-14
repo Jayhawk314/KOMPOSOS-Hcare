@@ -583,6 +583,17 @@ def run_conflict_drug(args) -> int:
     return 0
 
 
+def run_trend_ma(geovar_path: str, years=None) -> int:
+    """Multi-year MA overpayment trend from the FFS GeoVar PUF (2014-2024)."""
+    from domains.flow.trends import MATrendEngine, summarize as tr_summarize
+    yrs = years or list(range(2014, 2025))
+    print(f"computing MA overpayment trend {yrs[0]}-{yrs[-1]} from {geovar_path} ...\n",
+          flush=True)
+    report = MATrendEngine().analyze(geovar_path, yrs)
+    print(tr_summarize(report))
+    return 0
+
+
 def run_hospital(path: Optional[str] = None) -> int:
     """Hospital price coherence ('same DRG, different price'). Real Inpatient
     PUF if a path is given, else synthetic."""
@@ -680,6 +691,9 @@ def main(argv=None) -> int:
     p.add_argument("--hospital", nargs="?", const="", metavar="CSV",
                    help="hospital price coherence ('same DRG, different price'); "
                         "optional Medicare Inpatient PUF CSV, else synthetic")
+    p.add_argument("--trend-ma", dest="trend_ma", metavar="GEOVAR_CSV",
+                   help="multi-year MA overpayment trend from the FFS Geographic "
+                        "Variation PUF (2014-2024 in one file)")
     p.add_argument("--ledger", action="store_true",
                    help="THE UNIFIED LEAK LEDGER: run every detector (real where "
                         "data paths are given), assemble + rank + score + write "
@@ -734,6 +748,8 @@ def main(argv=None) -> int:
         return run_conflict(args)
     if args.coload:
         return run_coload(args)
+    if args.trend_ma:
+        return run_trend_ma(args.trend_ma)
     if args.hospital is not None:
         return run_hospital(args.hospital or None)
     if args.nash_sheaf:

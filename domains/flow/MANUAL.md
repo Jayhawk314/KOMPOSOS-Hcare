@@ -344,6 +344,28 @@ validated; drug-conflict 0.55; one-directional billing gap auto-driven to 0.05).
 
 ---
 
+### 6.2 The time dimension — "is the leak growing?"
+
+🟢 **In plain words:** A single year tells you *how big*; a run of years tells
+you *which way it's headed*. Because one CMS file already carries 2014–2024, we
+can trace the Medicare Advantage overpayment across **11 years with real data**:
+it grew from **$31 billion (2014) to $92 billion (2024)** — about **11.5% a
+year, and accelerating.** And it's growing *faster than enrollment* (8%/yr), so
+it isn't just "more people in MA" — the overpayment *per person* is rising too.
+The tool also names the fastest-growing states (Illinois +19%/yr, etc.). This is
+what turns the ledger from a snapshot into "is this getting better or worse?"
+
+🔵 **The math:** A generic `Trend` (level, year-over-year, CAGR, direction,
+accelerating = latest YoY > long-run CAGR) computed by running a detector across
+years. `MATrendEngine` runs the MA overpayment per year off the FFS Geographic
+Variation PUF (consumed side real each year; paid-side benchmark held at the
+MedPAC ratio across years — a stated constant). 2014→2024: overpayment CAGR
++11.5% (GROWING, ACCELERATING) vs enrollment CAGR +8.0%. The same engine
+generalizes to every other detector as prior-year files are ingested; persistent
+homology / temporal sheaves are the richer-change-detection refinement.
+
+---
+
 ## 7. Validation — does it match the official watchdogs?
 
 🟢 **In plain words:** A tool that invents numbers is worthless. So we check our
@@ -390,7 +412,7 @@ join keys lives in `sources/registry.py`.
 
 ```bash
 # Confirm everything works (no downloads needed)
-python -m pytest domains/flow/tests/ -q          # 88 tests
+python -m pytest domains/flow/tests/ -q          # 93 tests
 
 # Each detector on built-in demo data:
 python -m domains.flow.run_coherence --synthetic     # conservation
@@ -401,6 +423,7 @@ python -m domains.flow.run_coherence --coload        # the NPI join
 python -m domains.flow.run_coherence --conflict      # Open Payments x Part D (NPI-level)
 python -m domains.flow.run_coherence --conflict-drug # ... drug-level (paid vs unpaid per drug)
 python -m domains.flow.run_coherence --hospital      # hospital price coherence (same DRG, diff price)
+python -m domains.flow.run_coherence --trend-ma data/ffs_geovar_2014_2024.csv  # 11-yr MA overpayment trend
 python -m domains.flow.run_coherence --ledger        # THE UNIFIED LEDGER (all detectors -> one file)
 
 # On real downloaded data (examples):

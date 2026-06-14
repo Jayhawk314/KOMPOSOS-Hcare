@@ -254,10 +254,18 @@ OZEMPIC $2.07B, JARDIANCE $1.47B, MOUNJARO $857M, FARXIGA $823M), LOW $20.0B
 
 ### Phase 6 — Time + product
 
-Everything is single-year (currently D24 = 2024 CMS). Phase 6 adds the temporal
-dimension and the delivery layer:
-   - Multi-year ingestion (CMS publishes yearly; pull 2015–2024).
-   - Temporal sheaves / streaming Kan for change detection year-over-year.
+Phase 6 adds the temporal dimension and the delivery layer:
+   - **Time dimension ✅ STARTED** (`trends.py`, `--trend-ma`). Generic
+     `Trend`/`compute_trend` (level, YoY, CAGR, direction, accelerating) +
+     `MATrendEngine` running the MA detector across years. The FFS GeoVar PUF
+     already carries 2014–2024 in one file, so the MA overpayment trend is REAL
+     with no new downloads (consumed side real per year; paid-side benchmark held
+     at the MedPAC ratio across years — stated). **Real result**: MA overpayment
+     **$30.8B (2014) → $91.7B (2024), CAGR +11.5%, GROWING & ACCELERATING**
+     (outpaces enrollment +8.0%/yr → per-enrollee leak also rising); fastest-
+     growing states IL +19%/yr, MS, ME, MD(accel). NEXT: extend the trend engine
+     to the other detectors as their prior-year files are ingested; persistent
+     homology / temporal sheaves for richer change detection.
    - The delivery layer: daily job → ledger artifact → dashboard, packaged for
      the four buyers (payers, auditors, qui-tam attorneys, journalists).
      "Yesterday's leak, every morning."

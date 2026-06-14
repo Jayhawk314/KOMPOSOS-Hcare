@@ -840,7 +840,11 @@ def write_fixtures(directory: str) -> Dict[str, str]:
             ["2024", "State", "TX", "48", "All", 1800000, 2505775, 0.55, 13500.0, 14056.0],
             ["2024", "State", "PR", "72", "All", 50000, 400000, 0.85, 9000.0, 11000.0],  # territory -> skipped
             ["2024", "State", "CA", "06", "<65", 300000, 400000, 0.50, 16000.0, 15000.0],# wrong age -> ignored
-            ["2023", "State", "CA", "06", "All", 1900000, 3300000, 0.59, 13000.0, 12500.0],# wrong year -> ignored
+            # Prior years (for the multi-year trend engine): CA & TX 2022-2023.
+            ["2023", "State", "CA", "06", "All", 2050000, 3200000, 0.59, 13600.0, 12900.0],
+            ["2022", "State", "CA", "06", "All", 2100000, 3000000, 0.58, 13200.0, 12500.0],
+            ["2023", "State", "TX", "48", "All", 1850000, 2350000, 0.54, 13200.0, 13700.0],
+            ["2022", "State", "TX", "48", "All", 1900000, 2200000, 0.53, 12900.0, 13400.0],
             # County rows (FIPS-keyed MA enrollment) for enrollment weighting:
             ["2024", "County", "CA-Alpha", "06001", "All", 5000, 1000, 0.50, 13000.0, 12000.0],
             ["2024", "County", "CA-Beta", "06003", "All", 8000, 3000, 0.60, 14500.0, 13800.0],
