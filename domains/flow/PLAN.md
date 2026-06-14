@@ -113,10 +113,19 @@ Imports use `from core.category import Category` (resolves because
      not a free public file (CMS uses restricted encounter/RAPS data; MedPAC
      estimates coding intensity nationally). `load_ma_risk` + `--ma-risk-file`
      slot real scores in when obtained; default stays the documented MedPAC
-     1.20, with a loud note. **NEXT**: obtain real per-geo MA risk scores (the
-     last non-public input); cross-check national total vs RADV recoveries /
-     MedPAC; the ~$20B gap above MedPAC's ~$83–88B is now mostly the uniform MA
-     risk parameter + benchmark-vs-standardized-FFS normalization, both noted.
+     1.20, with a loud note.
+   - **Cross-check vs MedPAC/RADV/OIG DONE** (`validation.py`, auto-printed by
+     `--ma-geovar`): encodes the published figures with citations — MedPAC 2025
+     $84B (=$40B coding + $44B favorable selection, 20% above FFS), MedPAC 2024
+     ~$83B/~22%; RADV ~$0.479B/yr (vacated by court Sept 2025) and HHS-OIG ~$7.5B
+     as the much-smaller *enforcement* floor (not the economic total). Result:
+     our default $107.3B = 1.28× MedPAC (SAME ORDER, high). **Calibrated** to
+     MedPAC's net +10% coding (`--ma-risk 1.169`): **$93.8B = 1.12× MedPAC →
+     CONSISTENT**, coding $41.8B ≈ MedPAC's $40B. i.e. an independent
+     computation from real CMS data reproduces MedPAC within 12% using their
+     coding parameter. **NEXT**: obtain real per-geo MA risk (the last
+     non-public input); residual gap is benchmark-spread≠favorable-selection +
+     benchmark-vs-standardized-FFS normalization.
 
 ### Phase 3 — Conflict of interest + outliers
 4. **Open Payments ↔ Part D 2-cell**: correlate pharma payments to an NPI with
@@ -181,7 +190,9 @@ finds):
 are "hypotheses for review." Build a validation harness that scores flagged
 entities against KNOWN published numbers — RADV recoveries, OIG/GAO improper-
 payment reports, DOJ qui-tam settlements. This turns "interesting math" into a
-trustworthy ledger.
+trustworthy ledger. **STARTED**: `validation.py` cross-checks the MA national
+total against MedPAC/RADV/OIG (calibrated estimate is CONSISTENT with MedPAC,
+1.12×). Extend the same pattern to the provider/outlier/Nash detectors.
 
 **5f. Wire the domain into the unified Agent.** Detectors currently call
 `Category`/`cosmos` directly. Expose each as an Orion plugin so **COG verifies

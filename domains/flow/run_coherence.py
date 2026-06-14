@@ -272,6 +272,13 @@ def run_ma_geovar(geovar_path: str, year=2024,
     results = engine.evaluate_all(contracts)
     print(ma_summarize(results))
 
+    # Cross-check the national total against MedPAC / RADV / OIG.
+    from domains.flow.validation import summarize_cross_check
+    total_paid = sum(r.paid for r in results)
+    total_consumed = sum(r.consumed for r in results)
+    total_coding = sum(r.coding_intensity for r in results)
+    print("\n" + summarize_cross_check(total_paid, total_consumed, total_coding))
+
     overpays = [m for m in cat.morphisms() if m.name == "overpays"]
     two_cells = 0
     if cosmos is not None:
