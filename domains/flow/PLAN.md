@@ -145,8 +145,18 @@ Imports use `from core.category import Category` (resolves because
      per pair. **Real 2024**: 475,443 matched (provider,drug) pairs, 396 drugs,
      **median lift 1.25×, prescribing-weighted 1.79×** (FARXIGA 1.70×, JARDIANCE
      1.68×, MOUNJARO 1.47×, CAPLYTA 1.51×), 127,821 flagged pairs. Drug-controlled
-     → stronger than NPI-level. **NEXT**: causal designs (diff-in-diff around
-     payment timing, provider fixed effects).
+     → stronger than NPI-level.
+   - **DIFF-IN-DIFFERENCES ✅ DONE** (`DiDConflict`, `--conflict-did`): treatment
+     = providers NEWLY paid about a drug in the post year (paid post, not prior);
+     control = never paid about it; outcome = prior→post change in prescribing $.
+     DiD = mean Δ(treat) − mean Δ(control) nets out the secular trend. Needs 2
+     years of Open Payments + Part D by-drug (have 2023+2024 →
+     `data/cms_op_2023.csv` 8.2GB, `data/cms_d23_partd_bydrug.csv` 3.88GB). **Real
+     2023→2024**: 213 drugs, median DiD **$4,505/provider**, **$1.44–1.48B
+     attributable excess prescribing growth** net of trend (ELIQUIS: newly-paid
+     +$18,642 vs control +$6,740 → +$152M; OZEMPIC +$187M; JARDIANCE +$121M;
+     VYNDAMAX $1.5M/prov). Observational caveats stated. NEXT: provider fixed
+     effects; multi-year pre-trend check.
 5. **Yoneda fingerprint outliers** — ✅ DONE + run REAL (`outliers.py`,
    `--outliers <service.csv>`). Provider HCPCS bag vs specialty peers. The first
    real national run exposed a metric flaw: weighted-Jaccard distance to a

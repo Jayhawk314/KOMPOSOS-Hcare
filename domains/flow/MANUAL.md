@@ -272,6 +272,17 @@ weighted by volume.** For big-name drugs: FARXIGA 1.70×, JARDIANCE 1.68×,
 MOUNJARO 1.47×, antipsychotics like CAPLYTA 1.51× and REXULTI 1.46×. Because it
 holds the drug fixed, this is the textbook conflict-of-interest pattern.
 
+🟢 **The strongest version — diff-in-differences (built):** The drug-level link
+could still be "paid doctors were already heavier prescribers." So we used two
+years: compare doctors who **newly** started getting paid about a drug against
+doctors **never** paid about it, looking at how each group's prescribing of that
+drug *changed* from 2023 to 2024. On 213 drugs, the newly-paid group's
+prescribing grew **$1.4–1.5 billion more than the never-paid group's** — for
+ELIQUIS, never-paid prescribers grew +$6,740 while newly-paid grew +$18,642
+(~3× the trend). Subtracting the control group's growth removes "the drug was
+just getting more popular," which is the cleanest public-data evidence short of
+a randomized trial (still not proof of cause — stated).
+
 🔵 **The math (drug-level):** Aggregate to `{(npi, drug): payment}` (Open
 Payments primary product, Drug/Biological only) and `{(npi, drug): cost}` (Part
 D by Provider and Drug, brand-normalized). For each drug *d*, the **lift** is

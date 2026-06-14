@@ -143,17 +143,20 @@ class YonedaOutlierEngine:
 
     def __init__(self, distance_threshold: float = 0.6, min_billed: float = 50_000.0,
                  min_peers: int = 3, category=None, max_writes: int = 500,
-                 rarity_threshold: float = 0.5) -> None:
+                 rarity_threshold: float = 0.5, top_pct: float = 0.01) -> None:
         self.distance_threshold = distance_threshold
         self.min_billed = min_billed
         self.min_peers = min_peers
         self.category = category
         # Cap Category write-back (backend commits per insert) to the top flagged.
         self.max_writes = max_writes
-        # Flag basis at scale: share of billing in codes rare among peers. The
-        # distance-to-consensus saturates over huge specialty groups, so it is
-        # reported but not used as the gate.
+        # Flag = (in the top `top_pct` of the specialty by rarity) AND rarity >=
+        # rarity_threshold AND material billing. Rank within specialty keeps the
+        # flagged set controlled even for huge heterogeneous buckets (NP/PA/IM)
+        # where an absolute rarity cut over-flags; the floor + billing keep it
+        # meaningful. Distance-to-consensus saturates at scale -> reported only.
         self.rarity_threshold = rarity_threshold
+        self.top_pct = top_pct
 
     def analyze(self, fingerprints: Mapping[str, Fingerprint],
                 specialties: Mapping[str, str]) -> List[OutlierResult]:
@@ -168,22 +171,29 @@ class YonedaOutlierEngine:
             group = [fingerprints[n] for n in npis]
             cons = consensus(group)
             prev = peer_prevalence(group)
+            spec_results: List[OutlierResult] = []
             for npi in npis:
                 fp = fingerprints[npi]
                 total = sum(v for v in fp.values() if v > 0)
                 dist = yoneda_distance(fp, cons)        # reported (saturates at scale)
-                rar = rarity_score(fp, prev)            # flag basis (discriminating)
+                rar = rarity_score(fp, prev)            # discriminating signal
                 drivers = self._driver_codes(fp, prev)
-                r = OutlierResult(npi=npi, specialty=spec, distance=dist,
-                                  total_billed=total, peers=peers, rarity=rar,
-                                  driver_codes=drivers)
-                r._flag = (
-                    rar >= self.rarity_threshold
-                    and total >= self.min_billed
-                    and peers >= self.min_peers
-                )
-                results.append(r)
-        results.sort(key=lambda x: (-x.rarity, -x.total_billed))
+                spec_results.append(OutlierResult(
+                    npi=npi, specialty=spec, distance=dist, total_billed=total,
+                    peers=peers, rarity=rar, driver_codes=drivers))
+            # Flag the top `top_pct` of the specialty by rarity, intersected with
+            # the rarity floor + material-billing floor (only when the peer group
+            # is large enough for a stable comparison).
+            if peers >= self.min_peers:
+                cand = [r for r in spec_results
+                        if r.total_billed >= self.min_billed
+                        and r.rarity >= self.rarity_threshold]
+                cand.sort(key=lambda r: -r.rarity)
+                k = max(1, int(peers * self.top_pct))
+                for r in cand[:k]:
+                    r._flag = True
+            results.extend(spec_results)
+        results.sort(key=lambda x: (x._flag is False, -x.rarity, -x.total_billed))
         # Write back only the top flagged (bounded; backend commits per insert).
         if self.category is not None:
             written = 0
