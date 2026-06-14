@@ -1,0 +1,307 @@
+# SPDX-License-Identifier: Apache-2.0 OR LicenseRef-Proprietary-Commercial
+# SPDX-FileCopyrightText: 2026 James Ray Hawkins <jhawk314@gmail.com>
+
+"""Run the healthcare money-flow coherence check.
+
+Demo on synthetic data (no downloads needed):
+    python -m domains.flow.run_coherence --synthetic
+
+List the data sources we glue:
+    python -m domains.flow.run_coherence --registry
+
+Real data (Phase 2 -- loaders are stubs for now):
+    python -m domains.flow.run_coherence \\
+        --provider data/medicare_physician_2023.csv \\
+        --usaspending data/usaspending_hhs_2023.csv
+
+Datasets:
+    CMS provider summary: https://data.cms.gov/provider-summary-by-type-of-service
+    USASpending:          https://api.usaspending.gov/
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from typing import Optional
+
+# Bootstrap the categorical runtime onto sys.path (see domains/__init__.py).
+import domains  # noqa: F401
+from core.category import Category
+
+from domains.flow.coherence import (
+    FlowCoherenceChecker,
+    Section,
+    pushforward,
+    summarize,
+)
+from domains.flow.sources import print_registry
+
+
+def _synthetic_sections():
+    """Three sections of the same money graph, with planted leaks.
+
+    - usaspending : top-of-chain federal obligations per provider
+    - cms_billing : what each provider actually billed Medicare
+    - These should glue. Two providers are planted as leaks:
+        npi_over   : bills far more than was obligated (overbilling outlier)
+        npi_ghost  : obligated money, ~nothing billed (possible ghost/fraud)
+    """
+    usaspending = Section(
+        source="usaspending_hhs",
+        layer="0-federal",
+        values={
+            "npi_0001": 1_200_000, "npi_0002": 880_000, "npi_0003": 2_400_000,
+            "npi_0004": 540_000,  "npi_over": 300_000,  "npi_ghost": 1_000_000,
+            "npi_0007": 760_000,  "npi_0008": 1_500_000,
+        },
+    )
+    cms_billing = Section(
+        source="cms_billing",
+        layer="3-provider",
+        values={
+            "npi_0001": 1_188_000, "npi_0002": 894_000, "npi_0003": 2_376_000,
+            "npi_0004": 545_000,  "npi_over": 2_700_000,  # 9x the obligation
+            "npi_ghost": 12_000,                           # money vanished
+            "npi_0007": 752_000,  "npi_0008": 1_512_000,
+        },
+    )
+    # provider -> specialty, for the Level-1 pushforward demo.
+    specialty = {
+        "npi_0001": "cardiology", "npi_0002": "cardiology",
+        "npi_0003": "oncology",   "npi_0004": "oncology",
+        "npi_over": "oncology",   "npi_ghost": "primary",
+        "npi_0007": "primary",    "npi_0008": "radiology",
+    }
+    return usaspending, cms_billing, specialty
+
+
+def run_synthetic() -> int:
+    usaspending, cms_billing, specialty = _synthetic_sections()
+    cat = Category(db_path=":memory:")
+    checker = FlowCoherenceChecker(tolerance=0.02, category=cat)
+
+    # Level 0: do the two sources agree per provider?
+    results = checker.check_all([usaspending, cms_billing])
+    print(summarize(results))
+
+    # Level 1: push both forward along provider -> specialty and re-check.
+    print("\n" + "=" * 64)
+    print("Level 1: pushforward provider -> specialty (money conservation)")
+    us_grp = pushforward(usaspending, specialty)
+    cms_grp = pushforward(cms_billing, specialty)
+    grp_results = FlowCoherenceChecker(tolerance=0.02).check_all([us_grp, cms_grp])
+    print(summarize(grp_results))
+
+    # Show the structure written back into the Category.
+    disputes = [m for m in cat.morphisms() if m.name == "disputes"]
+    print("\n" + "=" * 64)
+    print(f"written to Category: {len(cat.objects())} objects, "
+          f"{len(cat.morphisms())} morphisms ({len(disputes)} disputes)")
+    for m in sorted(disputes, key=lambda x: -x.confidence):
+        print(f"   {m.source} -disputes-> {m.target}  (conf={m.confidence})")
+    return 0
+
+
+def run_real(args) -> int:
+    """Phase 2: real CMS data coherence.
+
+    The headline real-data check needs no fabricated joins: CMS publishes the
+    SAME billing both as line items ('by Provider and Service') and as a
+    per-provider aggregate ('by Provider'). Summing the line items to NPI is a
+    pushforward that MUST equal the aggregate. Where it does not glue, a source
+    is wrong (a real conservation check on the same NPI key).
+    """
+    from domains.flow.ingest import (
+        load_provider_service, load_provider_summary,
+        load_nppes, specialty_map, FlowCategoryBuilder,
+    )
+
+    if not (args.service and args.summary):
+        print("Phase 2 conservation check needs --service AND --summary "
+              "(CMS by-Provider-and-Service + by-Provider).")
+        print("See domains/flow/sources/registry.py for download URLs.")
+        return 1
+
+    cat = Category(db_path=":memory:")
+    checker = FlowCoherenceChecker(tolerance=0.02, category=cat)
+
+    print("Loading CMS line items (by Provider and Service)...")
+    service = load_provider_service(args.service)
+    print(f"  {len(service)} providers, ${sum(service.values.values()):,.0f} billed")
+    print("Loading CMS aggregate (by Provider)...")
+    summary = load_provider_summary(args.summary)
+    print(f"  {len(summary)} providers, ${sum(summary.values.values()):,.0f} billed")
+
+    # Conservation: sum-of-line-items per NPI must equal the aggregate.
+    print("\nLevel 0: line-item pushforward to NPI  vs  provider aggregate")
+    results = checker.check_all([service, summary])
+    print(summarize(results))
+
+    # Optional Level-1 pushforward along NPI -> specialty (needs NPPES, or the
+    # specialty column already present in the CMS files in a later step).
+    if args.nppes:
+        print("\nLoading NPPES for NPI -> specialty pushforward...")
+        nppes = load_nppes(args.nppes)
+        spec = specialty_map(nppes)
+        FlowCategoryBuilder(cat).add_nppes(nppes)
+        svc_grp = pushforward(service, spec, source_suffix="@specialty")
+        sum_grp = pushforward(summary, spec, source_suffix="@specialty")
+        print("Level 1: provider -> specialty (money conservation)")
+        print(summarize(FlowCoherenceChecker(tolerance=0.02).check_all([svc_grp, sum_grp])))
+
+    disputes = [m for m in cat.morphisms() if m.name == "disputes"]
+    print(f"\nwritten to Category: {len(cat.objects())} objects, "
+          f"{len(cat.morphisms())} morphisms ({len(disputes)} disputes)")
+    return 0
+
+
+def run_ma(contracts_path: Optional[str] = None) -> int:
+    """Medicare Advantage paid-vs-consumed 2-cell (the headline overpayment).
+
+    With no path, runs on synthetic contracts. The cosmos auto-detects the
+    parallel paid/consumed morphisms and materializes the 2-cell.
+    """
+    from domains.flow.medicare_advantage import (
+        MedicareAdvantageTwoCell, summarize as ma_summarize, synthetic_contracts,
+    )
+
+    if contracts_path:
+        from domains.flow.ingest import load_ma_contracts
+        contracts = load_ma_contracts(contracts_path)
+        print(f"loaded {len(contracts)} MA contracts from {contracts_path}\n")
+    else:
+        contracts = synthetic_contracts()
+        print("synthetic MA contracts (use --ma <csv> for real data)\n")
+
+    cat = Category(db_path=":memory:")
+    cosmos = None
+    try:
+        from core.cosmos import InfinityCosmos
+        cosmos = InfinityCosmos(cat)
+    except Exception:
+        pass  # 2-cell still computed; formal registration skipped.
+
+    engine = MedicareAdvantageTwoCell(category=cat, cosmos=cosmos)
+    results = engine.evaluate_all(contracts)
+    print(ma_summarize(results))
+
+    overpays = [m for m in cat.morphisms() if m.name == "overpays"]
+    two_cells = 0
+    if cosmos is not None:
+        try:
+            # rebuild so auto-detection sees every paid/consumed parallel pair
+            two_cells = len(cosmos.homotopy_2_category(rebuild=True).two_cells)
+        except Exception:
+            two_cells = 0
+    print(f"\nCategory: {len(cat.objects())} objects, {len(cat.morphisms())} "
+          f"morphisms ({len(overpays)} overpays edges); "
+          f"{two_cells} 2-cells in h2K")
+    return 0
+
+
+def run_outliers(service_path: Optional[str] = None) -> int:
+    """Yoneda peer-outlier detection on provider billing fingerprints.
+
+    With no path, runs on synthetic cardiology peers + one outlier.
+    """
+    from domains.flow.outliers import (
+        YonedaOutlierEngine, summarize as out_summarize, synthetic_fingerprints,
+    )
+
+    if service_path:
+        from domains.flow.ingest import load_provider_fingerprints
+        fps, specs = load_provider_fingerprints(service_path)
+        print(f"loaded {len(fps)} provider fingerprints from {service_path}\n")
+        engine = YonedaOutlierEngine()
+    else:
+        fps, specs = synthetic_fingerprints()
+        print("synthetic fingerprints (use --outliers <service.csv> for real data)\n")
+        # small synthetic group: relax the peer floor so the demo flags.
+        engine = YonedaOutlierEngine(min_peers=3, min_billed=50_000)
+
+    cat = Category(db_path=":memory:")
+    engine.category = cat
+    results = engine.analyze(fps, specs)
+    print(out_summarize(results))
+    flags = [m for m in cat.morphisms() if m.name == "outlier_in"]
+    print(f"\nCategory: {len(cat.objects())} objects, {len(cat.morphisms())} "
+          f"morphisms ({len(flags)} outlier_in edges)")
+    return 0
+
+
+def run_nash_sheaf() -> int:
+    """Nash sheaf: cross-market strategic-gaming detection (synthetic demo)."""
+    from domains.flow.nash_sheaf import (
+        NashSheaf, summarize as ns_summarize, synthetic_observations,
+    )
+    obs = synthetic_observations()
+    print("synthetic: 3 plans x 5 markets (honest / strategic gamer / noisy)\n")
+    cat = Category(db_path=":memory:")
+    engine = NashSheaf(category=cat)
+    results = engine.analyze(obs)
+    print(ns_summarize(results))
+    flags = [m for m in cat.morphisms() if m.name == "strategic_gaming"]
+    print(f"\nCategory: {len(cat.objects())} objects, {len(cat.morphisms())} "
+          f"morphisms ({len(flags)} strategic_gaming edges)")
+    return 0
+
+
+def run_demo_real() -> int:
+    """Exercise the real loaders on generated real-schema fixtures."""
+    import tempfile
+    from domains.flow.ingest import write_fixtures
+
+    tmp = tempfile.mkdtemp(prefix="flow_fixtures_")
+    paths = write_fixtures(tmp)
+    print(f"wrote real-schema fixtures to {tmp}\n")
+
+    class _Args:
+        service = paths["service"]
+        summary = paths["summary"]
+        nppes = paths["nppes"]
+    return run_real(_Args())
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(description="flow domain coherence check")
+    p.add_argument("--synthetic", action="store_true",
+                   help="run the planted-leak demo (no downloads)")
+    p.add_argument("--registry", action="store_true",
+                   help="print the data source catalog and exit")
+    p.add_argument("--service", help="CMS 'by Provider and Service' CSV/zip/gz")
+    p.add_argument("--summary", help="CMS 'by Provider' aggregate CSV/zip/gz")
+    p.add_argument("--nppes", help="NPPES NPI registry CSV (for specialty pushforward)")
+    p.add_argument("--ma", nargs="?", const="", metavar="CSV",
+                   help="Medicare Advantage paid-vs-consumed 2-cell; optional "
+                        "contracts CSV, else synthetic")
+    p.add_argument("--outliers", nargs="?", const="", metavar="CSV",
+                   help="Yoneda peer-outlier billing detection; optional CMS "
+                        "by-Provider-and-Service CSV, else synthetic")
+    p.add_argument("--nash-sheaf", action="store_true",
+                   help="cross-market strategic-gaming detection (Nash sheaf)")
+    p.add_argument("--demo-real", action="store_true",
+                   help="generate real-schema fixtures and run the real path on them")
+    args = p.parse_args(argv)
+
+    if args.registry:
+        print_registry()
+        return 0
+    if args.synthetic:
+        return run_synthetic()
+    if args.ma is not None:
+        return run_ma(args.ma or None)
+    if args.outliers is not None:
+        return run_outliers(args.outliers or None)
+    if args.nash_sheaf:
+        return run_nash_sheaf()
+    if args.demo_real:
+        return run_demo_real()
+    if args.service or args.summary or args.nppes:
+        return run_real(args)
+    p.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
