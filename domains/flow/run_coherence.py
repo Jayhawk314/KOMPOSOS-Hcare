@@ -437,6 +437,91 @@ def run_conflict(args) -> int:
     return 0
 
 
+def run_ledger(args) -> int:
+    """The unified leak ledger: run every detector (real where data paths are
+    given, synthetic otherwise), assemble into one ranked, scored output, and
+    write a CSV/JSON artifact. This is the 'yesterday's leak, every morning'
+    product surface.
+    """
+    import datetime
+    from domains.flow import ledger as L
+
+    led = L.Ledger()
+
+    # -- Medicare Advantage overpayment --------------------------------------
+    from domains.flow.medicare_advantage import (
+        MedicareAdvantageTwoCell, synthetic_contracts,
+    )
+    if args.ma_geovar:
+        from domains.flow.ingest import (
+            load_ffs_geovar, load_ma_ratebook, load_ssa_fips_crosswalk,
+            load_county_ma_enrollment,
+        )
+        from domains.flow.medicare_advantage import assemble_contracts_from_geovar
+        print("ledger: MA overpayment (real GeoVar)...", flush=True)
+        geo = load_ffs_geovar(args.ma_geovar, year=args.ma_year, geo_level="State")
+        overrides = {}
+        if args.ma_ratebook:
+            weights = None
+            if args.ma_crosswalk:
+                xw = load_ssa_fips_crosswalk(args.ma_crosswalk)
+                enr = load_county_ma_enrollment(args.ma_geovar, year=args.ma_year)
+                weights = {s: enr.get(f, 0) for s, f in xw.items()}
+            for s, bm in load_ma_ratebook(args.ma_ratebook, bonus=args.ma_bonus,
+                                          weights=weights).items():
+                overrides.setdefault(s, {})["benchmark_per_capita"] = bm
+        contracts = assemble_contracts_from_geovar(geo, overrides=overrides)
+    else:
+        print("ledger: MA overpayment (synthetic)...", flush=True)
+        contracts = synthetic_contracts()
+    led.extend(L.from_ma(MedicareAdvantageTwoCell().evaluate_all(contracts)))
+
+    # -- Drug-level conflict of interest -------------------------------------
+    from domains.flow.conflict import DrugLevelConflict, synthetic_drug_inputs
+    if args.open_payments and args.part_d_drug:
+        from domains.flow.ingest import (
+            load_open_payments_by_drug, load_part_d_by_drug,
+        )
+        print("ledger: drug-level conflict (real, slow)...", flush=True)
+        pay = load_open_payments_by_drug(args.open_payments)
+        rx = load_part_d_by_drug(args.part_d_drug, keep_drugs={d for _n, d in pay})
+        rep = DrugLevelConflict().analyze(pay, rx)
+    else:
+        print("ledger: drug-level conflict (synthetic)...", flush=True)
+        pay, rx = synthetic_drug_inputs()
+        rep = DrugLevelConflict(min_group=3).analyze(pay, rx)
+    led.extend(L.from_drug_conflict(rep))
+
+    # -- Billing conservation (real if --service/--summary) ------------------
+    from domains.flow.coherence import FlowCoherenceChecker
+    if args.service and args.summary:
+        from domains.flow.ingest import load_provider_service, load_provider_summary
+        print("ledger: billing conservation (real)...", flush=True)
+        secs = [load_provider_service(args.service), load_provider_summary(args.summary)]
+        pr = FlowCoherenceChecker(tolerance=0.02, category=None).check_all(secs)
+        led.extend(L.from_conservation(pr))
+
+    # -- Yoneda outliers + Nash gaming (synthetic demos) ---------------------
+    from domains.flow.outliers import YonedaOutlierEngine, synthetic_fingerprints
+    fps, specs = synthetic_fingerprints()
+    led.extend(L.from_outliers(
+        YonedaOutlierEngine(min_peers=3, min_billed=50_000).analyze(fps, specs)))
+    from domains.flow.nash_sheaf import NashSheaf, synthetic_observations
+    led.extend(L.from_nash(NashSheaf().analyze(synthetic_observations())))
+
+    print("\n" + L.summarize(led))
+
+    stamp = datetime.date.today().isoformat()
+    import os
+    os.makedirs("data", exist_ok=True)
+    csv_path = f"data/leak_ledger_{stamp}.csv"
+    json_path = f"data/leak_ledger_{stamp}.json"
+    led.to_csv(csv_path)
+    led.to_json(json_path)
+    print(f"\nwrote {len(led.findings):,} findings -> {csv_path} + {json_path}")
+    return 0
+
+
 def run_conflict_drug(args) -> int:
     """Drug-level Open Payments x Part D conflict (payment about a drug vs
     prescribing of that drug). Real files if given, else synthetic.
@@ -558,6 +643,10 @@ def main(argv=None) -> int:
                         "by-Provider-and-Service CSV, else synthetic")
     p.add_argument("--nash-sheaf", action="store_true",
                    help="cross-market strategic-gaming detection (Nash sheaf)")
+    p.add_argument("--ledger", action="store_true",
+                   help="THE UNIFIED LEAK LEDGER: run every detector (real where "
+                        "data paths are given), assemble + rank + score + write "
+                        "data/leak_ledger_<date>.csv/.json")
     p.add_argument("--conflict", action="store_true",
                    help="Open Payments x Part D conflict-of-interest 2-cell "
                         "(uses --open-payments + --part-d, else synthetic)")
@@ -597,6 +686,8 @@ def main(argv=None) -> int:
         return run_ma(args.ma or None)
     if args.outliers is not None:
         return run_outliers(args.outliers or None)
+    if args.ledger:
+        return run_ledger(args)
     if args.conflict_drug:
         return run_conflict_drug(args)
     if args.conflict:

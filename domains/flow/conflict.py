@@ -247,6 +247,7 @@ class DrugConflictReport:
     median_lift: float
     weighted_lift: float        # prescribing-weighted mean lift
     top_drugs: List[DrugLift] = field(default_factory=list)
+    lifts: List[DrugLift] = field(default_factory=list)   # all qualifying drugs
     flagged: List[DrugConflictResult] = field(default_factory=list)
 
 
@@ -326,6 +327,7 @@ class DrugLevelConflict:
             n_drugs=len(lifts), correlation=corr,
             median_lift=median_lift, weighted_lift=weighted_lift,
             top_drugs=sorted(lifts, key=lambda l: -l.total_pay)[:25],
+            lifts=lifts,
             flagged=flagged,
         )
         if self.category is not None:
