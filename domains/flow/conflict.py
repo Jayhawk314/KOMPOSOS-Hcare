@@ -466,7 +466,7 @@ def summarize_did(report: DiDReport, top: int = 20) -> str:
     for d in report.drugs[:top]:
         lines.append(
             f"    {d.drug[:26]:<26} DiD ${d.did:>12,.0f}/prov  "
-            f"(treat Δ${d.mean_delta_treat:>11,.0f} vs ctrl Δ${d.mean_delta_control:>11,.0f}, "
+            f"(treat d${d.mean_delta_treat:>11,.0f} vs ctrl d${d.mean_delta_control:>11,.0f}, "
             f"n_treat={d.n_treat:,})  ${d.attributable:>14,.0f}")
     lines.append("-" * 74)
     lines.append("  observational: parallel-trends unverifiable with two periods; "

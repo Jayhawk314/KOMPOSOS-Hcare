@@ -147,9 +147,16 @@ Imports use `from core.category import Category` (resolves because
      1.68×, MOUNJARO 1.47×, CAPLYTA 1.51×), 127,821 flagged pairs. Drug-controlled
      → stronger than NPI-level. **NEXT**: causal designs (diff-in-diff around
      payment timing, provider fixed effects).
-5. **Yoneda fingerprint outliers**: a provider's HCPCS/drug bag vs peer
-   sheaf-section (specialty + region); flag divergence as overbilling risk.
-   Reuse `core/formal_yoneda.py` (`yoneda_similarity`, transfer threshold).
+5. **Yoneda fingerprint outliers** — ✅ DONE + run REAL (`outliers.py`,
+   `--outliers <service.csv>`). Provider HCPCS bag vs specialty peers. The first
+   real national run exposed a metric flaw: weighted-Jaccard distance to a
+   whole-specialty consensus SATURATES (~1.0 for everyone over ~100k-provider
+   groups → 255k/1.2M flagged, useless). Fixed with a **rarity-weighted
+   concentration** score (`peer_prevalence` + `rarity_score`): share of a
+   provider's billing in codes RARE among peers — discriminating at scale.
+   Driver codes the real run surfaces are credible (skin-substitute Q42xx, a
+   known overbilling area). Write-back capped (`max_writes`). NEXT: peer group
+   by specialty+region (wage/market), and a $-excess estimate per flagged code.
 
 ### Phase 4 — Prices, OPTIMUS, product
 6. **Hospital price coherence** — ✅ DONE (`hospital.py`, `--hospital`). Built on
