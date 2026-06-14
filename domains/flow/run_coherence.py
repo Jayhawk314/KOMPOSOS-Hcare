@@ -202,14 +202,20 @@ def run_ma(contracts_path: Optional[str] = None) -> int:
 
 def run_ma_geovar(geovar_path: str, year=2024,
                   benchmark_ratio: Optional[float] = None,
-                  ma_risk: Optional[float] = None) -> int:
+                  ma_risk: Optional[float] = None,
+                  ratebook_path: Optional[str] = None,
+                  bonus: str = "5%",
+                  risk_path: Optional[str] = None) -> int:
     """MA paid-vs-consumed 2-cell on REAL FFS Geographic Variation data.
 
     The consumed side (FFS per-capita x real MA enrollment, per state) is real
-    CMS data; the paid side uses documented MedPAC parameters (overridable).
+    CMS data. The paid side uses the REAL CMS ratebook benchmark when
+    ``ratebook_path`` is given (else a documented MedPAC ratio), and real MA
+    risk scores when ``risk_path`` is given (else the documented MedPAC coding
+    parameter -- per-geo MA risk is not freely public).
     Cross-check the national total against MedPAC's published MA overpayment.
     """
-    from domains.flow.ingest import load_ffs_geovar
+    from domains.flow.ingest import load_ffs_geovar, load_ma_ratebook, load_ma_risk
     from domains.flow.medicare_advantage import (
         MedicareAdvantageTwoCell, assemble_contracts_from_geovar,
         summarize as ma_summarize,
@@ -220,10 +226,26 @@ def run_ma_geovar(geovar_path: str, year=2024,
     rs = ma_risk if ma_risk is not None else MEDPAC_MA_CODING_RISK
     print(f"loading FFS Geographic Variation PUF (year {year}, by state)...")
     geovar = load_ffs_geovar(geovar_path, year=year, geo_level="State")
+
+    # Build per-state overrides from real sources where available.
+    overrides: dict = {}
+    bm_src = f"MedPAC ratio {br}"
+    if ratebook_path:
+        ratebook = load_ma_ratebook(ratebook_path, bonus=bonus)
+        for st, bm in ratebook.items():
+            overrides.setdefault(st, {})["benchmark_per_capita"] = bm
+        bm_src = f"REAL ratebook ({len(ratebook)} states, {bonus} bonus tier)"
+    risk_src = f"MedPAC {rs}"
+    if risk_path:
+        riskmap = load_ma_risk(risk_path)
+        for st, r in riskmap.items():
+            overrides.setdefault(st, {})["risk_score"] = r
+        risk_src = f"REAL risk file ({len(riskmap)} geos)"
+
     contracts = assemble_contracts_from_geovar(
-        geovar, benchmark_ratio=br, ma_risk_score=rs)
-    print(f"  {len(contracts)} states  (consumed=real FFS per-capita x real MA "
-          f"enrollment; paid: benchmark_ratio={br}, ma_risk={rs} [MedPAC])\n")
+        geovar, benchmark_ratio=br, ma_risk_score=rs, overrides=overrides)
+    print(f"  {len(contracts)} states  (consumed=REAL FFS per-capita x REAL MA "
+          f"enrollment;\n   benchmark={bm_src}; MA risk={risk_src})\n")
 
     cat = Category(db_path=":memory:")
     cosmos = None
@@ -245,9 +267,10 @@ def run_ma_geovar(geovar_path: str, year=2024,
             two_cells = 0
     print(f"\nCategory: {len(cat.objects())} objects, {len(cat.morphisms())} "
           f"morphisms ({len(overpays)} overpays edges); {two_cells} 2-cells in h2K")
-    print("\nNOTE: paid-side benchmark/risk are documented MedPAC parameters; "
-          "supply real ratebook benchmarks + measured MA risk scores via "
-          "assemble_contracts_from_geovar(overrides=...) to make them real too.")
+    if not risk_path:
+        print("\nNOTE: MA risk score is the documented MedPAC parameter -- "
+              "per-geo MA risk is not freely public (CMS uses restricted "
+              "encounter data). Supply --ma-risk-file <csv> to use real scores.")
     return 0
 
 
@@ -335,6 +358,14 @@ def main(argv=None) -> int:
                    help="paid-side benchmark/FFS ratio (default MedPAC 1.08)")
     p.add_argument("--ma-risk", type=float, default=None,
                    help="paid-side MA risk score (default MedPAC 1.20)")
+    p.add_argument("--ma-ratebook", metavar="ZIP/CSV",
+                   help="REAL CMS MA ratebook (county rates) for the paid-side "
+                        "benchmark, per state (zip or CountyRate CSV)")
+    p.add_argument("--ma-bonus", default="5%", choices=["5%", "3.5%", "0%"],
+                   help="ratebook quality-bonus tier (default 5%)")
+    p.add_argument("--ma-risk-file", metavar="CSV",
+                   help="real MA risk scores by geo (geo,risk_score); per-geo "
+                        "MA risk is not freely public")
     p.add_argument("--outliers", nargs="?", const="", metavar="CSV",
                    help="Yoneda peer-outlier billing detection; optional CMS "
                         "by-Provider-and-Service CSV, else synthetic")
@@ -352,7 +383,10 @@ def main(argv=None) -> int:
     if args.ma_geovar:
         return run_ma_geovar(args.ma_geovar, year=args.ma_year,
                              benchmark_ratio=args.ma_benchmark_ratio,
-                             ma_risk=args.ma_risk)
+                             ma_risk=args.ma_risk,
+                             ratebook_path=args.ma_ratebook,
+                             bonus=args.ma_bonus,
+                             risk_path=args.ma_risk_file)
     if args.ma is not None:
         return run_ma(args.ma or None)
     if args.outliers is not None:

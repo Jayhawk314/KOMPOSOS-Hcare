@@ -13,6 +13,7 @@ from domains.flow.medicare_advantage import (
 )
 from domains.flow.ingest import (
     write_fixtures, load_ma_contracts, load_ma_enrollment, load_ffs_geovar,
+    load_ma_ratebook, load_ma_risk,
 )
 
 
@@ -122,3 +123,21 @@ def test_assemble_from_geovar_overrides(tmp_path):
     # TX keeps the modeled defaults.
     tx = next(c for c in contracts if c.contract_id == "TX")
     assert tx.risk_score == MEDPAC_MA_CODING_RISK
+
+
+def test_real_ratebook_and_risk_flow_into_contracts(tmp_path):
+    """End-to-end: real ratebook benchmark + real risk file -> contract inputs."""
+    paths = write_fixtures(str(tmp_path))
+    geo = load_ffs_geovar(paths["ffs_geovar"], year=2024, geo_level="State")
+    ratebook = load_ma_ratebook(paths["ma_ratebook"])     # CA 14,400 / TX 12,000
+    risk = load_ma_risk(paths["ma_risk"])                  # CA 1.15 / TX 1.25
+    overrides = {}
+    for st, bm in ratebook.items():
+        overrides.setdefault(st, {})["benchmark_per_capita"] = bm
+    for st, r in risk.items():
+        overrides.setdefault(st, {})["risk_score"] = r
+    contracts = assemble_contracts_from_geovar(geo, overrides=overrides)
+    ca = next(c for c in contracts if c.contract_id == "CA")
+    assert ca.benchmark_per_capita == 14_400.0   # real ratebook, not 1.08*ffs
+    assert ca.risk_score == 1.15                  # real risk file
+    assert ca.ffs_per_capita == 13_254.0         # real FFS baseline

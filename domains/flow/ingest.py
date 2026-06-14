@@ -378,6 +378,113 @@ def load_ffs_geovar(path: str, *, year, geo_level: str = "State",
 
 
 # ---------------------------------------------------------------------------
+# MA ratebook -- real county benchmark rates (the paid-side benchmark)
+# ---------------------------------------------------------------------------
+_STATE_NAME_TO_CODE = {
+    "ALABAMA": "AL", "ALASKA": "AK", "ARIZONA": "AZ", "ARKANSAS": "AR",
+    "CALIFORNIA": "CA", "COLORADO": "CO", "CONNECTICUT": "CT", "DELAWARE": "DE",
+    "DISTRICT OF COLUMBIA": "DC", "FLORIDA": "FL", "GEORGIA": "GA",
+    "HAWAII": "HI", "IDAHO": "ID", "ILLINOIS": "IL", "INDIANA": "IN",
+    "IOWA": "IA", "KANSAS": "KS", "KENTUCKY": "KY", "LOUISIANA": "LA",
+    "MAINE": "ME", "MARYLAND": "MD", "MASSACHUSETTS": "MA", "MICHIGAN": "MI",
+    "MINNESOTA": "MN", "MISSISSIPPI": "MS", "MISSOURI": "MO", "MONTANA": "MT",
+    "NEBRASKA": "NE", "NEVADA": "NV", "NEW HAMPSHIRE": "NH", "NEW JERSEY": "NJ",
+    "NEW MEXICO": "NM", "NEW YORK": "NY", "NORTH CAROLINA": "NC",
+    "NORTH DAKOTA": "ND", "OHIO": "OH", "OKLAHOMA": "OK", "OREGON": "OR",
+    "PENNSYLVANIA": "PA", "RHODE ISLAND": "RI", "SOUTH CAROLINA": "SC",
+    "SOUTH DAKOTA": "SD", "TENNESSEE": "TN", "TEXAS": "TX", "UTAH": "UT",
+    "VERMONT": "VT", "VIRGINIA": "VA", "WASHINGTON": "WA",
+    "WEST VIRGINIA": "WV", "WISCONSIN": "WI", "WYOMING": "WY",
+}
+
+# Map the requested quality-bonus tier to the substring in the rate column name.
+_BONUS_COL = {"5%": "5% Bonus", "3.5%": "3.5% Bonus", "0%": "0% Bonus"}
+
+
+def _ratebook_rows(path: str) -> Iterator[List[str]]:
+    """Yield rows from the CMS ratebook county CSV (inside a .zip or direct).
+
+    The ratebook ships a few CSVs; pick the all-plans CountyRate file (not PACE
+    / EGWP / regional). The file has several title/note rows before the header
+    that starts with ``Code,State,County Name,...``.
+    """
+    if path.lower().endswith(".zip"):
+        with zipfile.ZipFile(path) as zf:
+            members = [n for n in zf.namelist()
+                       if n.lower().endswith(".csv") and "countyrate" in n.lower()
+                       and "pace" not in n.lower()]
+            if not members:
+                raise ValueError(f"no CountyRate CSV inside {path}")
+            data = zf.read(members[0])
+        fh = io.TextIOWrapper(io.BytesIO(data), encoding="utf-8-sig", newline="")
+        yield from csv.reader(fh)
+    else:
+        with _open_text(path) as fh:
+            yield from csv.reader(fh)
+
+
+def load_ma_ratebook(path: str, *, bonus: str = "5%") -> Dict[str, float]:
+    """CMS MA county ratebook -> per-state ANNUAL benchmark per-capita (real).
+
+    The county rates are CMS's published Parts A&B monthly capitation
+    benchmarks (risk-normalized to a 1.0 beneficiary). We pick the quality-bonus
+    tier (``bonus`` in {"5%","3.5%","0%"}; most MA enrollment is in 4+ star
+    plans receiving the 5% bonus), convert monthly->annual (x12), and aggregate
+    county->state by simple county mean. State assignment is exact (by name);
+    intra-state enrollment weighting needs an SSA<->FIPS crosswalk and is a
+    documented refinement. Returns ``{state_code: annual_benchmark_per_capita}``.
+    """
+    want = _BONUS_COL.get(bonus, "5% Bonus")
+    sums: Dict[str, float] = {}
+    counts: Dict[str, int] = {}
+    header = None
+    code_i = state_i = rate_i = None
+    for row in _ratebook_rows(path):
+        if header is None:
+            if row and row[0].strip().lower() == "code":
+                header = [c.strip() for c in row]
+                state_i = header.index("State")
+                rate_i = next(i for i, c in enumerate(header) if want in c)
+                code_i = 0
+            continue
+        if not row or len(row) <= rate_i:
+            continue
+        state_name = row[state_i].strip().upper()
+        code = _STATE_NAME_TO_CODE.get(state_name)
+        if not code:
+            continue
+        rate = _to_float(row[rate_i])
+        if rate <= 0:
+            continue
+        sums[code] = sums.get(code, 0.0) + rate * 12.0   # monthly -> annual
+        counts[code] = counts.get(code, 0) + 1
+    return {c: sums[c] / counts[c] for c in sums}
+
+
+def load_ma_risk(path: str) -> Dict[str, float]:
+    """Optional user-supplied MA risk score by geo -> {geo: risk_score}.
+
+    Per-geography MA risk scores are NOT published as a free public file (CMS
+    computes them from restricted encounter/RAPS data; MedPAC estimates coding
+    intensity nationally). This loader lets real risk scores be slotted in when
+    obtained from any source. CSV columns (aliases): geo/state/contract_id and
+    risk_score/risk/raf.
+    """
+    out: Dict[str, float] = {}
+    with _open_text(path) as fh:
+        reader = csv.DictReader(fh)
+        fields = reader.fieldnames or []
+        g_c = _require(fields, ["geo", "state", "contract_id", "STATE"], "geo")
+        r_c = _require(fields, ["risk_score", "risk", "raf"], "risk score")
+        for row in reader:
+            g = str(row.get(g_c, "")).strip()
+            if not g:
+                continue
+            out[g] = _to_float(row.get(r_c))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # NPPES registry  -- the provider -> peer-group functor's source of truth
 # ---------------------------------------------------------------------------
 def load_nppes(path: str) -> Dict[str, Dict[str, str]]:
@@ -543,5 +650,28 @@ def write_fixtures(directory: str) -> Dict[str, str]:
             ["2024", "State", "CA", "<65", 300000, 400000, 0.50, 16000.0, 15000.0], # wrong age -> ignored
             ["2023", "State", "CA", "All", 1900000, 3300000, 0.59, 13000.0, 12500.0],# wrong year -> ignored
         ],
+    )
+    # MA ratebook county rates (real CMS schema: title rows, then Code,State,...
+    # with monthly Parts A&B benchmarks at three quality-bonus tiers).
+    rb = os.path.join(directory, "CountyRate2024.csv")
+    with open(rb, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["Medicare Advantage Monthly Capitation Rates for 2024", "", "", "", "", "", ""])
+        w.writerow(["Note: illustrative fixture", "", "", "", "", "", ""])
+        w.writerow(["Code", "State", "County Name",
+                    "Parts A&B 5% Bonus 2024 Rate", "Parts A&B 3.5% Bonus 2024 Rate",
+                    "Parts A&B 0% Bonus 2024 Rate", "Parts A&B ESRD 2024 Rate"])
+        # CA: two counties, mean monthly 5%-rate = 1,200 -> annual 14,400.
+        w.writerow(["05000", "CALIFORNIA", "ALPHA", "1,100.00", "1,080.00", "1,000.00", "8,300.00"])
+        w.writerow(["05010", "CALIFORNIA", "BETA", "1,300.00", "1,280.00", "1,200.00", "8,300.00"])
+        # TX: one county, monthly 5%-rate 1,000 -> annual 12,000.
+        w.writerow(["45000", "TEXAS", "GAMMA", "1,000.00", "980.00", "900.00", "8,300.00"])
+        # Territory not in the state map -> skipped.
+        w.writerow(["72000", "PUERTO RICO", "SANJUAN", "900.00", "880.00", "800.00", "8,300.00"])
+    paths["ma_ratebook"] = rb
+    paths["ma_risk"] = _w(
+        "ma_risk.csv",
+        ["state", "risk_score"],
+        [["CA", 1.15], ["TX", 1.25]],
     )
     return paths

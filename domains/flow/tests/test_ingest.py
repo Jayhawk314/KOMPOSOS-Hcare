@@ -12,7 +12,8 @@ from core.category import Category
 from domains.flow.ingest import (
     load_provider_service, load_provider_summary, load_part_d,
     load_open_payments, load_usaspending, load_nppes, specialty_map,
-    FlowCategoryBuilder, write_fixtures, load_ffs_geovar, _to_float, _resolve,
+    FlowCategoryBuilder, write_fixtures, load_ffs_geovar, load_ma_ratebook,
+    load_ma_risk, _to_float, _resolve,
 )
 from domains.flow.coherence import FlowCoherenceChecker, pushforward
 
@@ -123,3 +124,28 @@ def test_load_ffs_geovar_national(tmp_path):
     geo = load_ffs_geovar(paths["ffs_geovar"], year=2024, geo_level="National")
     assert geo["National"]["ma_cnt"] == 33_677_969
     assert geo["National"]["ffs_stdzd_pc"] == 12_553.26
+
+
+def test_load_ma_ratebook_county_mean_annualized(tmp_path):
+    paths = _fixtures(tmp_path)
+    rb = load_ma_ratebook(paths["ma_ratebook"], bonus="5%")
+    # CA: mean monthly 5% rate = (1100+1300)/2 = 1200 -> annual 14,400.
+    assert rb["CA"] == 14_400.0
+    # TX: single county monthly 1000 -> annual 12,000.
+    assert rb["TX"] == 12_000.0
+    # Puerto Rico is not in the 50-state+DC map -> excluded.
+    assert "PR" not in rb
+
+
+def test_load_ma_ratebook_bonus_tier(tmp_path):
+    paths = _fixtures(tmp_path)
+    rb0 = load_ma_ratebook(paths["ma_ratebook"], bonus="0%")
+    # CA 0% tier: (1000+1200)/2 = 1100 -> annual 13,200.
+    assert rb0["CA"] == 13_200.0
+
+
+def test_load_ma_risk(tmp_path):
+    paths = _fixtures(tmp_path)
+    risk = load_ma_risk(paths["ma_risk"])
+    assert risk["CA"] == 1.15
+    assert risk["TX"] == 1.25

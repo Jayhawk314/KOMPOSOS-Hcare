@@ -94,13 +94,24 @@ Imports use `from core.category import Category` (resolves because
      51 states, 33.0M enrollees, consumed $417.5B, paid $509.2B (MedPAC params),
      **overpayment ≈ $91.7B (~22% of FFS, $2,778/enrollee)** — matches MedPAC's
      ~122%-of-FFS finding; cosmos materializes 51 2-cells in h₂K.
-   - **Paid side still modeled**: `benchmark_per_capita` and `risk_score` use
-     documented MedPAC parameters (1.08 benchmark/FFS, 1.20 coding risk;
-     overridable via `--ma-benchmark-ratio`/`--ma-risk` or per-geo
-     `assemble_contracts_from_geovar(overrides=...)`). **NEXT**: slot in real MA
-     ratebook county benchmarks + measured MA risk scores (CMS ratebook xlsx +
-     risk-score files, outside the GeoVar PUF) to make the paid side real too;
-     cross-check against RADV recoveries.
+   - **REAL benchmark DONE** (`load_ma_ratebook`, `--ma-ratebook <zip>`): the
+     CMS MA ratebook ships county Parts A&B monthly capitation benchmarks as
+     CSV inside `/files/zip/<year>-ma-rate-book.zip` (no xlsx parsing needed).
+     Loader picks the quality-bonus tier (`--ma-bonus`, default 5% — most MA
+     enrollment is in 4+ star plans), annualizes (x12), aggregates county→state
+     by simple county mean (state assignment exact by name; intra-state
+     enrollment weighting needs an SSA↔FIPS crosswalk — documented refinement).
+     With the real ratebook, 2024 paid=$519.5B, **overpayment ≈$102.0B** and
+     per-state ratios now VARY realistically (FL 7%, WA 35%, OR 38% — real
+     benchmark-spread geography) instead of a flat ratio. ~$14B above MedPAC,
+     mostly from the unweighted county mean.
+   - **MA risk score: the one genuinely non-public input.** Per-geo MA risk is
+     not a free public file (CMS uses restricted encounter/RAPS data; MedPAC
+     estimates coding intensity nationally). `load_ma_risk` + `--ma-risk-file`
+     slot real scores in when obtained; default stays the documented MedPAC
+     1.20, with a loud note. **NEXT**: enrollment-weight the ratebook (SSA↔FIPS
+     crosswalk + county MA enrollment), obtain real MA risk scores, cross-check
+     national total vs RADV recoveries / MedPAC.
 
 ### Phase 3 — Conflict of interest + outliers
 4. **Open Payments ↔ Part D 2-cell**: correlate pharma payments to an NPI with
