@@ -205,7 +205,8 @@ def run_ma_geovar(geovar_path: str, year=2024,
                   ma_risk: Optional[float] = None,
                   ratebook_path: Optional[str] = None,
                   bonus: str = "5%",
-                  risk_path: Optional[str] = None) -> int:
+                  risk_path: Optional[str] = None,
+                  crosswalk_path: Optional[str] = None) -> int:
     """MA paid-vs-consumed 2-cell on REAL FFS Geographic Variation data.
 
     The consumed side (FFS per-capita x real MA enrollment, per state) is real
@@ -215,7 +216,10 @@ def run_ma_geovar(geovar_path: str, year=2024,
     parameter -- per-geo MA risk is not freely public).
     Cross-check the national total against MedPAC's published MA overpayment.
     """
-    from domains.flow.ingest import load_ffs_geovar, load_ma_ratebook, load_ma_risk
+    from domains.flow.ingest import (
+        load_ffs_geovar, load_ma_ratebook, load_ma_risk,
+        load_ssa_fips_crosswalk, load_county_ma_enrollment,
+    )
     from domains.flow.medicare_advantage import (
         MedicareAdvantageTwoCell, assemble_contracts_from_geovar,
         summarize as ma_summarize,
@@ -231,10 +235,20 @@ def run_ma_geovar(geovar_path: str, year=2024,
     overrides: dict = {}
     bm_src = f"MedPAC ratio {br}"
     if ratebook_path:
-        ratebook = load_ma_ratebook(ratebook_path, bonus=bonus)
+        weights = None
+        weighting = "unweighted county mean"
+        if crosswalk_path:
+            crosswalk = load_ssa_fips_crosswalk(crosswalk_path)       # ssa -> fips
+            county_enr = load_county_ma_enrollment(geovar_path, year=year)  # fips -> cnt
+            weights = {ssa: county_enr.get(fips, 0)
+                       for ssa, fips in crosswalk.items()}
+            weighting = (f"MA-enrollment-weighted via SSA<->FIPS crosswalk "
+                         f"({len(crosswalk)} counties, {len(county_enr)} with enrollment)")
+        ratebook = load_ma_ratebook(ratebook_path, bonus=bonus, weights=weights)
         for st, bm in ratebook.items():
             overrides.setdefault(st, {})["benchmark_per_capita"] = bm
-        bm_src = f"REAL ratebook ({len(ratebook)} states, {bonus} bonus tier)"
+        bm_src = (f"REAL ratebook ({len(ratebook)} states, {bonus} bonus tier, "
+                  f"{weighting})")
     risk_src = f"MedPAC {rs}"
     if risk_path:
         riskmap = load_ma_risk(risk_path)
@@ -363,6 +377,9 @@ def main(argv=None) -> int:
                         "benchmark, per state (zip or CountyRate CSV)")
     p.add_argument("--ma-bonus", default="5%", choices=["5%", "3.5%", "0%"],
                    help="ratebook quality-bonus tier (default 5%)")
+    p.add_argument("--ma-crosswalk", metavar="CSV",
+                   help="SSA<->FIPS county crosswalk (NBER ssa_fips_state_county); "
+                        "enables MA-enrollment-weighting of the ratebook benchmark")
     p.add_argument("--ma-risk-file", metavar="CSV",
                    help="real MA risk scores by geo (geo,risk_score); per-geo "
                         "MA risk is not freely public")
@@ -386,7 +403,8 @@ def main(argv=None) -> int:
                              ma_risk=args.ma_risk,
                              ratebook_path=args.ma_ratebook,
                              bonus=args.ma_bonus,
-                             risk_path=args.ma_risk_file)
+                             risk_path=args.ma_risk_file,
+                             crosswalk_path=args.ma_crosswalk)
     if args.ma is not None:
         return run_ma(args.ma or None)
     if args.outliers is not None:

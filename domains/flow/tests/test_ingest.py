@@ -13,7 +13,8 @@ from domains.flow.ingest import (
     load_provider_service, load_provider_summary, load_part_d,
     load_open_payments, load_usaspending, load_nppes, specialty_map,
     FlowCategoryBuilder, write_fixtures, load_ffs_geovar, load_ma_ratebook,
-    load_ma_risk, _to_float, _resolve,
+    load_ma_risk, load_ssa_fips_crosswalk, load_county_ma_enrollment,
+    _to_float, _resolve,
 )
 from domains.flow.coherence import FlowCoherenceChecker, pushforward
 
@@ -149,3 +150,32 @@ def test_load_ma_risk(tmp_path):
     risk = load_ma_risk(paths["ma_risk"])
     assert risk["CA"] == 1.15
     assert risk["TX"] == 1.25
+
+
+def test_load_ssa_fips_crosswalk(tmp_path):
+    paths = _fixtures(tmp_path)
+    xw = load_ssa_fips_crosswalk(paths["ssa_fips"])
+    assert xw["05000"] == "06001"
+    assert xw["45000"] == "48001"
+
+
+def test_load_county_ma_enrollment(tmp_path):
+    paths = _fixtures(tmp_path)
+    enr = load_county_ma_enrollment(paths["ffs_geovar"], year=2024)
+    assert enr["06001"] == 1000
+    assert enr["06003"] == 3000
+    assert enr["48001"] == 2000
+    # State/National rows are not county-level and must not appear.
+    assert "06" not in enr
+
+
+def test_ratebook_enrollment_weighted(tmp_path):
+    paths = _fixtures(tmp_path)
+    xw = load_ssa_fips_crosswalk(paths["ssa_fips"])          # ssa -> fips
+    enr = load_county_ma_enrollment(paths["ffs_geovar"], year=2024)  # fips -> cnt
+    weights = {ssa: enr.get(fips, 0) for ssa, fips in xw.items()}
+    rb = load_ma_ratebook(paths["ma_ratebook"], bonus="5%", weights=weights)
+    # CA: ALPHA annual 13,200 (wt 1000) + BETA annual 15,600 (wt 3000)
+    #   weighted = (13200*1000 + 15600*3000) / 4000 = 15,000 (vs 14,400 unweighted)
+    assert rb["CA"] == 15_000.0
+    assert rb["TX"] == 12_000.0  # single county, weight does not change it

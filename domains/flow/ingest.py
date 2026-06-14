@@ -423,42 +423,117 @@ def _ratebook_rows(path: str) -> Iterator[List[str]]:
             yield from csv.reader(fh)
 
 
-def load_ma_ratebook(path: str, *, bonus: str = "5%") -> Dict[str, float]:
+def load_ma_ratebook(path: str, *, bonus: str = "5%",
+                     weights: Optional[Mapping[str, float]] = None) -> Dict[str, float]:
     """CMS MA county ratebook -> per-state ANNUAL benchmark per-capita (real).
 
     The county rates are CMS's published Parts A&B monthly capitation
     benchmarks (risk-normalized to a 1.0 beneficiary). We pick the quality-bonus
     tier (``bonus`` in {"5%","3.5%","0%"}; most MA enrollment is in 4+ star
-    plans receiving the 5% bonus), convert monthly->annual (x12), and aggregate
-    county->state by simple county mean. State assignment is exact (by name);
-    intra-state enrollment weighting needs an SSA<->FIPS crosswalk and is a
-    documented refinement. Returns ``{state_code: annual_benchmark_per_capita}``.
+    plans receiving the 5% bonus) and convert monthly->annual (x12).
+
+    County->state aggregation:
+      * ``weights`` None  -> simple county mean (state assignment exact by name).
+      * ``weights`` given -> MA-enrollment-weighted mean, where ``weights`` maps
+        the ratebook county SSA code (zero-padded 5-digit) to a weight (county
+        MA enrollment). Build it from ``load_ssa_fips_crosswalk`` +
+        ``load_county_ma_enrollment``. Counties with no/zero weight fall back to
+        the unweighted mean for that state, so no state is dropped.
+
+    Returns ``{state_code: annual_benchmark_per_capita}``.
     """
     want = _BONUS_COL.get(bonus, "5% Bonus")
-    sums: Dict[str, float] = {}
-    counts: Dict[str, int] = {}
+    # Unweighted accumulators (also the fallback when a state has no weights).
+    u_sum: Dict[str, float] = {}
+    u_n: Dict[str, int] = {}
+    # Weighted accumulators.
+    w_sum: Dict[str, float] = {}
+    w_wt: Dict[str, float] = {}
     header = None
-    code_i = state_i = rate_i = None
+    state_i = rate_i = None
     for row in _ratebook_rows(path):
         if header is None:
             if row and row[0].strip().lower() == "code":
                 header = [c.strip() for c in row]
                 state_i = header.index("State")
                 rate_i = next(i for i, c in enumerate(header) if want in c)
-                code_i = 0
             continue
         if not row or len(row) <= rate_i:
             continue
-        state_name = row[state_i].strip().upper()
-        code = _STATE_NAME_TO_CODE.get(state_name)
+        code = _STATE_NAME_TO_CODE.get(row[state_i].strip().upper())
         if not code:
             continue
         rate = _to_float(row[rate_i])
         if rate <= 0:
             continue
-        sums[code] = sums.get(code, 0.0) + rate * 12.0   # monthly -> annual
-        counts[code] = counts.get(code, 0) + 1
-    return {c: sums[c] / counts[c] for c in sums}
+        annual = rate * 12.0
+        u_sum[code] = u_sum.get(code, 0.0) + annual
+        u_n[code] = u_n.get(code, 0) + 1
+        if weights is not None:
+            w = float(weights.get(str(row[0]).strip().zfill(5), 0.0))
+            if w > 0:
+                w_sum[code] = w_sum.get(code, 0.0) + annual * w
+                w_wt[code] = w_wt.get(code, 0.0) + w
+    out: Dict[str, float] = {}
+    for code in u_sum:
+        if weights is not None and w_wt.get(code, 0.0) > 0:
+            out[code] = w_sum[code] / w_wt[code]
+        else:
+            out[code] = u_sum[code] / u_n[code]
+    return out
+
+
+def load_ssa_fips_crosswalk(path: str) -> Dict[str, str]:
+    """SSA<->FIPS county crosswalk -> ``{ssa_code: fips_code}`` (both 5-digit).
+
+    The MA ratebook is keyed by SSA county code; the GeoVar PUF is keyed by
+    FIPS. This bridges them. Source: NBER ``ssa_fips_state_county_<year>.csv``
+    (columns ``ssa_code`` / ``fipscounty``). First mapping per SSA code wins
+    (the rare many-to-many border cases are negligible for enrollment weights).
+    """
+    out: Dict[str, str] = {}
+    with _open_text(path) as fh:
+        reader = csv.DictReader(fh)
+        fields = reader.fieldnames or []
+        ssa_c = _require(fields, ["ssa_code", "ssacounty", "ssa"], "SSA code")
+        fips_c = _require(fields, ["fipscounty", "fips_code", "fips"], "FIPS code")
+        for row in reader:
+            ssa = str(row.get(ssa_c, "")).strip().zfill(5)
+            fips = str(row.get(fips_c, "")).strip().zfill(5)
+            if ssa and fips and ssa not in out:
+                out[ssa] = fips
+    return out
+
+
+def load_county_ma_enrollment(path: str, *, year,
+                              age_level: str = "All") -> Dict[str, int]:
+    """County MA enrollment by FIPS from the FFS GeoVar PUF -> ``{fips: ma_cnt}``.
+
+    Used as the weight for enrollment-weighting the ratebook county->state.
+    Suppressed cells ('*') count as 0.
+    """
+    out: Dict[str, int] = {}
+    with _open_text(path) as fh:
+        reader = csv.DictReader(fh)
+        fields = reader.fieldnames or []
+        y_c = _require(fields, ["YEAR"], "year")
+        lvl_c = _require(fields, ["BENE_GEO_LVL"], "geo level")
+        cd_c = _require(fields, ["BENE_GEO_CD"], "geo code")
+        age_c = _require(fields, ["BENE_AGE_LVL"], "age level")
+        ma_c = _require(fields, ["BENES_MA_CNT"], "MA bene count")
+        ystr = str(year)
+        for row in reader:
+            if str(row.get(y_c, "")).strip() != ystr:
+                continue
+            if str(row.get(lvl_c, "")).strip() != "County":
+                continue
+            if str(row.get(age_c, "")).strip() != age_level:
+                continue
+            fips = str(row.get(cd_c, "")).strip().zfill(5)
+            if not fips or fips == "00000":
+                continue
+            out[fips] = int(_to_float(row.get(ma_c)))
+    return out
 
 
 def load_ma_risk(path: str) -> Dict[str, float]:
@@ -639,16 +714,20 @@ def write_fixtures(directory: str) -> Dict[str, str]:
     # FFS Geographic Variation PUF (real consumed baseline for the MA 2-cell).
     paths["ffs_geovar"] = _w(
         "ffs_geovar.csv",
-        ["YEAR", "BENE_GEO_LVL", "BENE_GEO_DESC", "BENE_AGE_LVL",
+        ["YEAR", "BENE_GEO_LVL", "BENE_GEO_DESC", "BENE_GEO_CD", "BENE_AGE_LVL",
          "BENES_OM_CNT", "BENES_MA_CNT", "MA_PRTCPTN_RATE",
          "TOT_MDCR_PYMT_PC", "TOT_MDCR_STDZD_PYMT_PC"],
         [
-            ["2024", "National", "National", "All", 27732177, 33677969, 0.5484, 13605.51, 12553.26],
-            ["2024", "State", "CA", "All", 2000000, 3466321, 0.60, 14000.0, 13254.0],
-            ["2024", "State", "TX", "All", 1800000, 2505775, 0.55, 13500.0, 14056.0],
-            ["2024", "State", "PR", "All", 50000, 400000, 0.85, 9000.0, 11000.0],   # territory -> skipped
-            ["2024", "State", "CA", "<65", 300000, 400000, 0.50, 16000.0, 15000.0], # wrong age -> ignored
-            ["2023", "State", "CA", "All", 1900000, 3300000, 0.59, 13000.0, 12500.0],# wrong year -> ignored
+            ["2024", "National", "National", "", "All", 27732177, 33677969, 0.5484, 13605.51, 12553.26],
+            ["2024", "State", "CA", "06", "All", 2000000, 3466321, 0.60, 14000.0, 13254.0],
+            ["2024", "State", "TX", "48", "All", 1800000, 2505775, 0.55, 13500.0, 14056.0],
+            ["2024", "State", "PR", "72", "All", 50000, 400000, 0.85, 9000.0, 11000.0],  # territory -> skipped
+            ["2024", "State", "CA", "06", "<65", 300000, 400000, 0.50, 16000.0, 15000.0],# wrong age -> ignored
+            ["2023", "State", "CA", "06", "All", 1900000, 3300000, 0.59, 13000.0, 12500.0],# wrong year -> ignored
+            # County rows (FIPS-keyed MA enrollment) for enrollment weighting:
+            ["2024", "County", "CA-Alpha", "06001", "All", 5000, 1000, 0.50, 13000.0, 12000.0],
+            ["2024", "County", "CA-Beta", "06003", "All", 8000, 3000, 0.60, 14500.0, 13800.0],
+            ["2024", "County", "TX-Gamma", "48001", "All", 6000, 2000, 0.55, 13500.0, 14056.0],
         ],
     )
     # MA ratebook county rates (real CMS schema: title rows, then Code,State,...
@@ -673,5 +752,15 @@ def write_fixtures(directory: str) -> Dict[str, str]:
         "ma_risk.csv",
         ["state", "risk_score"],
         [["CA", 1.15], ["TX", 1.25]],
+    )
+    # SSA<->FIPS crosswalk: ratebook SSA codes -> GeoVar county FIPS codes.
+    paths["ssa_fips"] = _w(
+        "ssa_fips.csv",
+        ["ssa_code", "fipscounty", "state", "countyname_fips"],
+        [
+            ["05000", "06001", "CA", "ALPHA"],
+            ["05010", "06003", "CA", "BETA"],
+            ["45000", "48001", "TX", "GAMMA"],
+        ],
     )
     return paths

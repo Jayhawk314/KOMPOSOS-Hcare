@@ -98,20 +98,25 @@ Imports use `from core.category import Category` (resolves because
      CMS MA ratebook ships county Parts A&B monthly capitation benchmarks as
      CSV inside `/files/zip/<year>-ma-rate-book.zip` (no xlsx parsing needed).
      Loader picks the quality-bonus tier (`--ma-bonus`, default 5% — most MA
-     enrollment is in 4+ star plans), annualizes (x12), aggregates county→state
-     by simple county mean (state assignment exact by name; intra-state
-     enrollment weighting needs an SSA↔FIPS crosswalk — documented refinement).
-     With the real ratebook, 2024 paid=$519.5B, **overpayment ≈$102.0B** and
-     per-state ratios now VARY realistically (FL 7%, WA 35%, OR 38% — real
-     benchmark-spread geography) instead of a flat ratio. ~$14B above MedPAC,
-     mostly from the unweighted county mean.
+     enrollment is in 4+ star plans), annualizes (x12), aggregates county→state.
+   - **Enrollment-weighting DONE** (`load_ssa_fips_crosswalk` +
+     `load_county_ma_enrollment`, `--ma-crosswalk <csv>`): ratebook is SSA-keyed,
+     GeoVar county MA enrollment is FIPS-keyed; the NBER SSA↔FIPS crosswalk
+     (`data.nber.org/ssa-fips-state-county-crosswalk/<year>/`) bridges them, so
+     county benchmarks are weighted by real county MA enrollment (falls back to
+     unweighted mean per state where enrollment is suppressed). 2024 results:
+     unweighted paid $519.5B / overpay **$102.0B**; enrollment-weighted paid
+     $524.9B / overpay **$107.3B** ($3,252/enrollee) — weighting shifts toward
+     high-enrollment urban counties whose benchmarks sit further above FFS.
+     Per-state ratios vary realistically (FL 8%, WA 36%, OR 39%).
    - **MA risk score: the one genuinely non-public input.** Per-geo MA risk is
      not a free public file (CMS uses restricted encounter/RAPS data; MedPAC
      estimates coding intensity nationally). `load_ma_risk` + `--ma-risk-file`
      slot real scores in when obtained; default stays the documented MedPAC
-     1.20, with a loud note. **NEXT**: enrollment-weight the ratebook (SSA↔FIPS
-     crosswalk + county MA enrollment), obtain real MA risk scores, cross-check
-     national total vs RADV recoveries / MedPAC.
+     1.20, with a loud note. **NEXT**: obtain real per-geo MA risk scores (the
+     last non-public input); cross-check national total vs RADV recoveries /
+     MedPAC; the ~$20B gap above MedPAC's ~$83–88B is now mostly the uniform MA
+     risk parameter + benchmark-vs-standardized-FFS normalization, both noted.
 
 ### Phase 3 — Conflict of interest + outliers
 4. **Open Payments ↔ Part D 2-cell**: correlate pharma payments to an NPI with
