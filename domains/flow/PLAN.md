@@ -225,6 +225,23 @@ total against MedPAC/RADV/OIG (calibrated estimate is CONSISTENT with MedPAC,
 every finding** (Tier 4 on the 2-cells) and **OPTIMUS refines the money graph**
 automatically — closing the five-layer loop described in the root `CLAUDE.md`.
 
+### Phase 5g — The unified leak ledger ✅ DONE (the convergence / product surface)
+
+`ledger.py` + `--ledger` assemble every detector into ONE ranked, scored output.
+A common `Finding` schema (detector, entity, category, dollars, confidence,
+basis, caveat); ranks by review-priority (dollars × confidence); totals by
+detector and confidence tier; writes `data/leak_ledger_<date>.csv/.json`.
+Honesty is structural: `dollars` = at stake/associated (not proven loss),
+`confidence` = review-priority weight (not recovery probability); the
+one-directional billing gap is auto-driven to ~0.05 (sinks to the bottom), the
+MedPAC-validated MA estimate is HIGH. `--ledger` runs each detector real where
+its data flags are supplied, synthetic otherwise.
+
+**Real 2024 assembled ledger**: 387 findings, **$146.1B total** — HIGH $107.3B
+(MA, 51 states), MEDIUM $18.8B (drug-conflict, 333 drugs: ELIQUIS $3.31B @2.46×,
+OZEMPIC $2.07B, JARDIANCE $1.47B, MOUNJARO $857M, FARXIGA $823M), LOW $20.0B
+(billing artifact). Next: the daily job wrapping this (Phase 6) + breadth.
+
 ### Phase 6 — Time + product
 
 Everything is single-year (currently D24 = 2024 CMS). Phase 6 adds the temporal

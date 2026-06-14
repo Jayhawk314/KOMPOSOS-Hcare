@@ -300,6 +300,26 @@ on real national data, both NPI-level and drug-level.**
 auditable, honest* pipeline: every figure is reproducible from public files with
 one command, and every figure carries its own caveat.
 
+### 6.1 The unified ledger — the product surface
+
+🟢 **In plain words:** One command (`--ledger`) runs every detector, puts all
+their findings into a single ranked list, scores each by how confident we are,
+and writes one file. The 2024 run produced **387 findings totaling $146 billion
+at stake**, sorted so the most important, most-trustworthy items are on top and
+the known data-artifact sinks to the bottom. The top rows are the 51 state-level
+Medicare Advantage overpayments and the biggest drug conflicts — **ELIQUIS
+$3.3B, OZEMPIC $2.1B, JARDIANCE $1.5B** of prescribing-excess associated with
+industry payments — each line tagged HIGH/MEDIUM/LOW and carrying its own
+caveat. This is the "yesterday's leak, every morning" artifact.
+
+🔵 **The math/output:** `ledger.py` normalizes each detector into a `Finding`
+(detector, entity, dollars, confidence, basis, caveat), ranks by
+priority = dollars × confidence, totals by detector and confidence tier, and
+emits CSV + JSON. Confidence is a documented review-priority weight (MA 0.70
+validated; drug-conflict 0.55; one-directional billing gap auto-driven to 0.05).
+2024 assembled: HIGH $107.3B (MA), MEDIUM $18.8B (333 drugs), LOW $20.0B
+(artifact). Run: `python -m domains.flow.run_coherence --ledger <data flags>`.
+
 ---
 
 ## 7. Validation — does it match the official watchdogs?
@@ -348,7 +368,7 @@ join keys lives in `sources/registry.py`.
 
 ```bash
 # Confirm everything works (no downloads needed)
-python -m pytest domains/flow/tests/ -q          # 77 tests
+python -m pytest domains/flow/tests/ -q          # 83 tests
 
 # Each detector on built-in demo data:
 python -m domains.flow.run_coherence --synthetic     # conservation
@@ -358,6 +378,7 @@ python -m domains.flow.run_coherence --nash-sheaf    # strategic gaming
 python -m domains.flow.run_coherence --coload        # the NPI join
 python -m domains.flow.run_coherence --conflict      # Open Payments x Part D (NPI-level)
 python -m domains.flow.run_coherence --conflict-drug # ... drug-level (paid vs unpaid per drug)
+python -m domains.flow.run_coherence --ledger        # THE UNIFIED LEDGER (all detectors -> one file)
 
 # On real downloaded data (examples):
 python -m domains.flow.run_coherence --service <by-service.csv> --summary <by-provider.csv>
