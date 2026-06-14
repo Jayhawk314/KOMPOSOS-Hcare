@@ -266,9 +266,17 @@ Phase 6 adds the temporal dimension and the delivery layer:
      growing states IL +19%/yr, MS, ME, MD(accel). NEXT: extend the trend engine
      to the other detectors as their prior-year files are ingested; persistent
      homology / temporal sheaves for richer change detection.
-   - The delivery layer: daily job → ledger artifact → dashboard, packaged for
-     the four buyers (payers, auditors, qui-tam attorneys, journalists).
-     "Yesterday's leak, every morning."
+   - **Delivery layer ✅ DONE** (`delivery.py`, `--daily`). `assemble(DataPaths)`
+     is the single shared ledger-assembly path (used by `--ledger` and `--daily`;
+     real where a data path is given, synthetic fallback unless `--real-only`).
+     `run_daily` writes a dated artifact set to `data/ledger/`
+     (`leak_ledger_<date>.csv/.json`, `digest_<date>.md`, `latest.*`,
+     `history.jsonl`), and **diffs against the previous run** (`diff_ledgers` →
+     new / grown / resolved + total change) so the headline is *what changed* —
+     the literal "yesterday's leak". `digest()` emits an email/dashboard-ready
+     markdown (totals, by-tier, top-by-priority, "what changed since <date>").
+     Schedule `--daily` via cron / Task Scheduler / a Claude Code routine. NEXT:
+     a dashboard view + wiring real data paths into the scheduled invocation.
 
 **Fastest path to "complete picture":** (1) 5a NPI co-load + UEI→CCN→NPI — turns
 4 islands into one category; (2) 5c real MA inputs + 5e cross-check vs

@@ -344,7 +344,25 @@ validated; drug-conflict 0.55; one-directional billing gap auto-driven to 0.05).
 
 ---
 
-### 6.2 The time dimension — "is the leak growing?"
+### 6.2 The daily job — "yesterday's leak, every morning"
+
+🟢 **In plain words:** One command (`--daily`) runs the whole ledger, saves it
+with today's date, and — the important part — **compares it to the last run and
+tells you what's new.** It writes a short digest you could email every morning:
+the totals, the top items, and a "what changed since last time" section (new
+leaks, ones that grew, ones that resolved). Schedule it and the tool becomes a
+living product instead of a one-off report.
+
+🔵 **The output:** `delivery.run_daily` assembles the ledger (shared
+`assemble()` path; real where data is supplied, `--real-only` to skip synthetic),
+writes `data/ledger/{leak_ledger_<date>.csv/.json, digest_<date>.md, latest.*,
+history.jsonl}`, and `diff_ledgers` against `latest.json` yields new / grown /
+resolved findings + total change keyed on (detector, entity). `history.jsonl`
+accumulates one record per run (date, total, counts, change) — the time series
+of the ledger itself. Schedule via cron / Windows Task Scheduler / a Claude Code
+routine.
+
+### 6.3 The time dimension — "is the leak growing?"
 
 🟢 **In plain words:** A single year tells you *how big*; a run of years tells
 you *which way it's headed*. Because one CMS file already carries 2014–2024, we
@@ -412,7 +430,7 @@ join keys lives in `sources/registry.py`.
 
 ```bash
 # Confirm everything works (no downloads needed)
-python -m pytest domains/flow/tests/ -q          # 93 tests
+python -m pytest domains/flow/tests/ -q          # 99 tests
 
 # Each detector on built-in demo data:
 python -m domains.flow.run_coherence --synthetic     # conservation
@@ -425,6 +443,7 @@ python -m domains.flow.run_coherence --conflict-drug # ... drug-level (paid vs u
 python -m domains.flow.run_coherence --hospital      # hospital price coherence (same DRG, diff price)
 python -m domains.flow.run_coherence --trend-ma data/ffs_geovar_2014_2024.csv  # 11-yr MA overpayment trend
 python -m domains.flow.run_coherence --ledger        # THE UNIFIED LEDGER (all detectors -> one file)
+python -m domains.flow.run_coherence --daily         # THE DAILY JOB (ledger + diff vs last run + digest)
 
 # On real downloaded data (examples):
 python -m domains.flow.run_coherence --service <by-service.csv> --summary <by-provider.csv>
