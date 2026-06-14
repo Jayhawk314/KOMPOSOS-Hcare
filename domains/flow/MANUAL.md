@@ -282,6 +282,27 @@ genuine 2-cell per pair. 2024: 475,443 matched pairs, 396 drugs, median lift
 1.25×, prescribing-weighted lift 1.79×, 127,821 flagged pairs. **Status: working
 on real national data, both NPI-level and drug-level.**
 
+### 5.7 Hospital price coherence — "same procedure, wildly different price"
+
+🟢 **In plain words:** A DRG is a standard bucket of hospital care (e.g. "joint
+replacement"). For the same bucket, hospitals should charge and be paid roughly
+the same once you account for region. They don't. On **real 2024 data (2,906
+hospitals, 540 DRGs)** the *sticker* price for the same DRG varies up to **23×**
+across hospitals, and hospitals were paid **$4.0 billion above their same-state
+peers for the identical DRG**. The honest catch: the top of that list is big
+teaching hospitals doing the most complex cases (ECMO, severe sepsis) — so the
+tool flags it for review and *says* case complexity may explain a lot, rather
+than crying waste.
+
+🔵 **The math:** Over the Medicare Inpatient PUF (CCN × DRG), each DRG's price
+is a section over hospitals; coherence = it glues (low dispersion after regional
+adjustment). Two readouts: (1) **chargemaster dispersion** = p90/p10 of submitted
+charge per DRG; (2) **payment excess** = a hospital above its same-state peer
+median for the DRG, excess = (payment − peer median) × discharges (the
+ledger-contributing metric). Keyed by CCN, this starts the **hospital (CCN)
+spine**. **Status: working on real national data** (centralized Inpatient PUF;
+per-hospital negotiated-rate MRFs are a future ingestion refinement).
+
 ---
 
 ## 6. The findings ledger (real numbers)
@@ -294,6 +315,7 @@ on real national data, both NPI-level and drug-level.**
 | Doctors who both bill & prescribe (2024) | **861,300** of 1.85M | **real, national** | the join that makes it one map |
 | Pharma payment ↔ prescribing link (2024, NPI-level) | **+0.305** Spearman over 734,802 doctors; **19,291** flagged | **real, national** | association, not causation |
 | Drug-level lift: paid vs unpaid prescribers of the *same drug* (2024) | **1.25× median, 1.79× weighted** across 396 drugs; 127,821 flagged pairs | **real, national** | drug-controlled; still association, not causation |
+| Hospital price: paid above same-state peers, same DRG (2024) | **$4.0B**; charge dispersion up to 23x | **real, national** | case-mix/teaching/DSH/wage-index may explain; review |
 | Peer-outlier & strategic-gaming detectors | — | **working, synthetic data** | wired for real data, not yet run at scale |
 
 **The point of the ledger is not one big scary number.** It's a *repeatable,
@@ -368,7 +390,7 @@ join keys lives in `sources/registry.py`.
 
 ```bash
 # Confirm everything works (no downloads needed)
-python -m pytest domains/flow/tests/ -q          # 83 tests
+python -m pytest domains/flow/tests/ -q          # 88 tests
 
 # Each detector on built-in demo data:
 python -m domains.flow.run_coherence --synthetic     # conservation
@@ -378,6 +400,7 @@ python -m domains.flow.run_coherence --nash-sheaf    # strategic gaming
 python -m domains.flow.run_coherence --coload        # the NPI join
 python -m domains.flow.run_coherence --conflict      # Open Payments x Part D (NPI-level)
 python -m domains.flow.run_coherence --conflict-drug # ... drug-level (paid vs unpaid per drug)
+python -m domains.flow.run_coherence --hospital      # hospital price coherence (same DRG, diff price)
 python -m domains.flow.run_coherence --ledger        # THE UNIFIED LEDGER (all detectors -> one file)
 
 # On real downloaded data (examples):

@@ -152,8 +152,18 @@ Imports use `from core.category import Category` (resolves because
    Reuse `core/formal_yoneda.py` (`yoneda_similarity`, transfer threshold).
 
 ### Phase 4 — Prices, OPTIMUS, product
-6. **Hospital MRF coherence**: "same DRG, different price" across hospitals
-   (stay on hospital files; payer TiC files are TB-scale).
+6. **Hospital price coherence** — ✅ DONE (`hospital.py`, `--hospital`). Built on
+   the centralized **Medicare Inpatient PUF** (CCN × DRG) rather than the
+   thousands of messy hospital MRF files (those remain a future ingestion
+   refinement). A DRG is one priced unit, so its price section over hospitals
+   should glue. Two views: chargemaster dispersion per DRG (p90/p10 submitted
+   charge) and payment EXCESS above same-state peer median (excess = (pay − peer
+   median) × discharges; ledger metric, conf 0.45). Starts the **CCN spine**.
+   **Real 2024**: 145,879 records, 2,906 hospitals, 540 DRGs; charge dispersion
+   up to 22.9× for one DRG; **$4.0B paid above same-state peers for the same
+   DRG** (top outliers are academic centers on high-complexity DRGs —
+   case-mix/teaching/DSH/wage-index caveated). **NEXT**: region/wage-index
+   adjustment; ingest real negotiated-rate MRFs (messy, per-hospital).
 7. **OPTIMUS** (`core/optimus.py`): factorize money morphisms to discover
    unnamed intermediaries (PBM rebate layers, intermediary billers).
 8. **Ledger product**: daily job (CMS/USASpending updates) → re-emit ledger +
