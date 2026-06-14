@@ -255,16 +255,32 @@ Those are the conflict-of-interest candidates worth a closer look. The tool is
 careful to say this is an *association*, not proof that the money caused the
 prescribing.
 
-🔵 **The math:** Two parallel evidence morphisms reach each provider —
-*payment* (pharma → provider, Open Payments $) and *prescribing* (provider →
+🔵 **The math (NPI-level):** Two parallel evidence morphisms reach each provider
+— *payment* (pharma → provider, Open Payments $) and *prescribing* (provider →
 drugs, Part D $). As parallel 1-morphisms `provider → influence`, the cosmos
-materializes a **2-cell** per flagged provider (the same construction as the MA
-2-cell). The population signal is the **Spearman rank correlation** between
-payment and prescribing (+0.305 over 734,802 providers in 2024 — modest but
-robust at that n). Providers in the top decile of *both* distributions are
-flagged (19,291 in 2024). **Status: working on real national data (NPI-level);**
-a drug-level refinement (manufacturer → drug → that drug's prescribing) is the
-documented next step.
+materializes a **2-cell** per flagged provider. The population signal is the
+**Spearman rank correlation** between payment and prescribing (+0.305 over
+734,802 providers in 2024 — robust at that n). Providers in the top decile of
+*both* are flagged (19,291 in 2024).
+
+🟢 **The sharper, drug-level version (built):** The NPI-level link could be
+explained away (paid doctors might just have sicker patients). So we tightened
+it: for *each specific drug*, compare doctors the maker **paid about that drug**
+against doctors who prescribe the same drug but **weren't paid**. Across **396
+drugs in 2024, the paid doctors prescribe a median 1.25× more — and 1.79× more
+weighted by volume.** For big-name drugs: FARXIGA 1.70×, JARDIANCE 1.68×,
+MOUNJARO 1.47×, antipsychotics like CAPLYTA 1.51× and REXULTI 1.46×. Because it
+holds the drug fixed, this is the textbook conflict-of-interest pattern.
+
+🔵 **The math (drug-level):** Aggregate to `{(npi, drug): payment}` (Open
+Payments primary product, Drug/Biological only) and `{(npi, drug): cost}` (Part
+D by Provider and Drug, brand-normalized). For each drug *d*, the **lift** is
+mean prescribing over paid providers ÷ mean over unpaid providers of *d*. For a
+matched (provider, drug) pair the payment and prescribing morphisms are parallel
+`provider → drug:⟨d⟩` (same source **and** target), so the cosmos materializes a
+genuine 2-cell per pair. 2024: 475,443 matched pairs, 396 drugs, median lift
+1.25×, prescribing-weighted lift 1.79×, 127,821 flagged pairs. **Status: working
+on real national data, both NPI-level and drug-level.**
 
 ---
 
@@ -276,7 +292,8 @@ documented next step.
 | Medicare Advantage overpayment (2024) | **~$107B** ($3,250/enrollee) | **real consumed + real benchmark** | MA risk score is the one modeled input |
 | Same, calibrated to MedPAC's coding figure | **$93.8B = 1.12× MedPAC** → CONSISTENT | **validated** | within 12% of the official estimate |
 | Doctors who both bill & prescribe (2024) | **861,300** of 1.85M | **real, national** | the join that makes it one map |
-| Pharma payment ↔ prescribing link (2024) | **+0.305** Spearman over 734,802 doctors; **19,291** flagged | **real, national** | association, not causation; NPI-level (not drug-matched yet) |
+| Pharma payment ↔ prescribing link (2024, NPI-level) | **+0.305** Spearman over 734,802 doctors; **19,291** flagged | **real, national** | association, not causation |
+| Drug-level lift: paid vs unpaid prescribers of the *same drug* (2024) | **1.25× median, 1.79× weighted** across 396 drugs; 127,821 flagged pairs | **real, national** | drug-controlled; still association, not causation |
 | Peer-outlier & strategic-gaming detectors | — | **working, synthetic data** | wired for real data, not yet run at scale |
 
 **The point of the ledger is not one big scary number.** It's a *repeatable,
@@ -331,7 +348,7 @@ join keys lives in `sources/registry.py`.
 
 ```bash
 # Confirm everything works (no downloads needed)
-python -m pytest domains/flow/tests/ -q          # 71 tests
+python -m pytest domains/flow/tests/ -q          # 77 tests
 
 # Each detector on built-in demo data:
 python -m domains.flow.run_coherence --synthetic     # conservation
@@ -339,7 +356,8 @@ python -m domains.flow.run_coherence --ma            # MA overpayment
 python -m domains.flow.run_coherence --outliers      # Yoneda peer outliers
 python -m domains.flow.run_coherence --nash-sheaf    # strategic gaming
 python -m domains.flow.run_coherence --coload        # the NPI join
-python -m domains.flow.run_coherence --conflict      # Open Payments x Part D
+python -m domains.flow.run_coherence --conflict      # Open Payments x Part D (NPI-level)
+python -m domains.flow.run_coherence --conflict-drug # ... drug-level (paid vs unpaid per drug)
 
 # On real downloaded data (examples):
 python -m domains.flow.run_coherence --service <by-service.csv> --summary <by-provider.csv>
@@ -362,10 +380,11 @@ peers." Here's what plugging in more data unlocks:
 
 🔵 **The math + the build path:**
 
-1. **Conflict-of-interest 2-cell (✅ built, Section 5.6).** Done at NPI level on
-   real national data. *Refinement:* match a payment's manufacturer to the drugs
-   it makes, then to that provider's prescribing of *those* drugs (drug-level
-   2-cell). *Solution it enables:* flag prescribing driven by payments, not need.
+1. **Conflict-of-interest 2-cell (✅ built, Section 5.6).** Done on real national
+   data at both NPI level and drug level (paid-vs-unpaid prescribing of the same
+   drug, 396 drugs). *Further refinement:* causal designs (difference-in-
+   differences around payment timing, provider fixed effects). *Solution it
+   enables:* flag prescribing driven by payments, not need.
 
 2. **Vertical conservation (the big one).** Today's checks are *horizontal* (two
    views of one layer). Connect the layers — federal $ → program → plan →

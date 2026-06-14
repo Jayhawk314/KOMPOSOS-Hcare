@@ -136,8 +136,17 @@ Imports use `from core.category import Category` (resolves because
    (Open Payments, 8.9GB general-payments CSV from openpaymentsdata.cms.gov) now
    on the NPI spine. **Real 2024 run**: 734,802 providers in both, Spearman
    **+0.305** (paid providers prescribe more), **19,291 flagged** top-decile-of-
-   both, 500 2-cells written. **NEXT (drug-level refinement)**: match a payment's
-   manufacturer → its drugs → that provider's prescribing of those drugs.
+   both, 500 2-cells written.
+   - **DRUG-LEVEL refinement ✅ DONE** (`DrugLevelConflict`, `--conflict-drug`):
+     matches a payment's specific drug to that provider's prescribing of the
+     *same* drug (`load_open_payments_by_drug` + `load_part_d_by_drug`, Part D
+     by-Provider-and-Drug 4GB). Per drug, **lift** = mean prescribing of paid
+     providers ÷ unpaid. Parallel morphisms `provider → drug:<d>` → real 2-cell
+     per pair. **Real 2024**: 475,443 matched (provider,drug) pairs, 396 drugs,
+     **median lift 1.25×, prescribing-weighted 1.79×** (FARXIGA 1.70×, JARDIANCE
+     1.68×, MOUNJARO 1.47×, CAPLYTA 1.51×), 127,821 flagged pairs. Drug-controlled
+     → stronger than NPI-level. **NEXT**: causal designs (diff-in-diff around
+     payment timing, provider fixed effects).
 5. **Yoneda fingerprint outliers**: a provider's HCPCS/drug bag vs peer
    sheaf-section (specialty + region); flag divergence as overbilling risk.
    Reuse `core/formal_yoneda.py` (`yoneda_similarity`, transfer threshold).
