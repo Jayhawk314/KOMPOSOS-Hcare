@@ -325,6 +325,65 @@ def run_outliers(service_path: Optional[str] = None) -> int:
     return 0
 
 
+def run_coload(args) -> int:
+    """NPI co-load: join billing + Part D + Open Payments + NPPES into one
+    category on the shared NPI spine. Real files if given, else synthetic demo.
+    """
+    from domains.flow.spine import (
+        NPISpine, summarize as sp_summarize, synthetic_sections,
+        SRC_BILLING, SRC_PART_D, SRC_OPEN_PAY,
+    )
+    labels = {SRC_BILLING: "billing (CMS by-Provider)",
+              SRC_PART_D: "Part D prescribing",
+              SRC_OPEN_PAY: "Open Payments (pharma)"}
+
+    cat = Category(db_path=":memory:")
+    spine = NPISpine(category=cat)
+    real = any([args.summary, args.part_d, args.open_payments])
+    if real:
+        from domains.flow.ingest import (
+            load_provider_summary, load_part_d, load_open_payments,
+            load_nppes, specialty_map,
+        )
+        if args.summary:
+            print(f"loading billing {args.summary} ...", flush=True)
+            spine.add_money_source(load_provider_summary(args.summary))
+        if args.part_d:
+            print(f"loading Part D {args.part_d} ...", flush=True)
+            spine.add_money_source(load_part_d(args.part_d))
+        if args.open_payments:
+            print(f"loading Open Payments {args.open_payments} ...", flush=True)
+            spine.add_money_source(load_open_payments(args.open_payments))
+        if args.nppes:
+            print(f"loading NPPES {args.nppes} ...", flush=True)
+            spine.set_nppes(load_nppes(args.nppes))
+        print()
+    else:
+        billing, part_d, open_pay, nppes = synthetic_sections()
+        spine.add_money_source(billing).add_money_source(part_d)
+        spine.add_money_source(open_pay).set_nppes(nppes)
+        print("synthetic NPI sections (use --summary/--part-d/--open-payments "
+              "for real data)\n")
+
+    report = spine.coverage()
+    print(sp_summarize(report, source_labels=labels))
+
+    # Write the most cross-linked providers into the Category and show a profile.
+    written = spine.build(min_sources=2, limit=args.coload_limit)
+    print(f"\nwrote {written} multi-source providers into the Category "
+          f"({len(cat.objects())} objects, {len(cat.morphisms())} morphisms)")
+    # Show one fully-joined provider as the unified view.
+    sets = {s: set(v) for s, v in spine._money.items()}
+    if sets:
+        common = set.intersection(*sets.values())
+        if common:
+            sample = sorted(common, key=lambda n: -sum(
+                spine._money[s].get(n, 0) for s in spine._money))[0]
+            prof = spine.profile(sample)
+            print(f"\nunified profile (appears in all sources): {prof}")
+    return 0
+
+
 def run_nash_sheaf() -> int:
     """Nash sheaf: cross-market strategic-gaming detection (synthetic demo)."""
     from domains.flow.nash_sheaf import (
@@ -395,6 +454,16 @@ def main(argv=None) -> int:
                         "by-Provider-and-Service CSV, else synthetic")
     p.add_argument("--nash-sheaf", action="store_true",
                    help="cross-market strategic-gaming detection (Nash sheaf)")
+    p.add_argument("--coload", action="store_true",
+                   help="NPI co-load: join billing + Part D + Open Payments + "
+                        "NPPES into one category on the NPI spine (uses "
+                        "--summary/--part-d/--open-payments/--nppes, else synthetic)")
+    p.add_argument("--part-d", dest="part_d", metavar="CSV",
+                   help="Medicare Part D Prescriber by-Provider CSV (for --coload)")
+    p.add_argument("--open-payments", dest="open_payments", metavar="CSV",
+                   help="CMS Open Payments CSV (for --coload)")
+    p.add_argument("--coload-limit", type=int, default=500,
+                   help="max multi-source providers to write into the Category")
     p.add_argument("--demo-real", action="store_true",
                    help="generate real-schema fixtures and run the real path on them")
     args = p.parse_args(argv)
@@ -416,6 +485,8 @@ def main(argv=None) -> int:
         return run_ma(args.ma or None)
     if args.outliers is not None:
         return run_outliers(args.outliers or None)
+    if args.coload:
+        return run_coload(args)
     if args.nash_sheaf:
         return run_nash_sheaf()
     if args.demo_real:

@@ -152,9 +152,17 @@ connected, real, validated system — the actual categorical thesis.
 **5a. The joins (highest value — this is the whole "it's all linked" claim).**
 Today each layer is keyed by a different ID and they don't touch, so the graph
 is 4 disconnected components, not one category. Build the bridges:
-   - **NPI co-load**: load provider billing + Part D + Open Payments + NPPES
-     into ONE `Category` on the shared NPI spine (keys already align; just not
-     co-loaded). *Natural next build.*
+   - **NPI co-load ✅ DONE** (`spine.py`, `--coload`): billing + Part D + Open
+     Payments + NPPES load into ONE `Category` on the shared NPI spine.
+     `NPISpine.coverage()` is pure set math (full national scale, no Category
+     writes) reporting per-source counts, pairwise overlaps, in-k-sources
+     distribution, and the all-source intersection — the literal "it's all
+     linked" evidence. `build(min_sources, limit)` writes only the most
+     cross-linked providers (multi-source, ranked by money) so the per-insert
+     backend stays fast; `profile(npi)` returns the unified per-provider view
+     (money per source + specialty/state from one query). The triple-overlap
+     set (bills + prescribes + receives pharma $) is the population the Open
+     Payments × Part D conflict-of-interest 2-cell will run on.
    - **UEI → CCN → NPI**: federal (USASpending, org-level) → facility → provider.
      Without it the federal layer floats free (Phase 2b carried forward).
    - **contract_id → NPI**: MA plan → its provider network (network data is
