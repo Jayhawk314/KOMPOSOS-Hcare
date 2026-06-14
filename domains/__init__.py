@@ -16,10 +16,12 @@ import sys
 
 # repo_root/domains/__init__.py  ->  repo_root
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_RUNTIME = os.path.join(_REPO_ROOT, "src", "komposos_core")
-_PRONOIA = os.path.join(_REPO_ROOT, "src", "pronoia")
+_SRC = os.path.join(_REPO_ROOT, "src")
+_RUNTIME = os.path.join(_SRC, "komposos_core")
+_PRONOIA = os.path.join(_SRC, "pronoia")
 
-for _p in (_RUNTIME, _PRONOIA):
-    # Front of path so `core`, `categorical`, `cog`, `zfc`, `pronoia`, ... resolve.
+for _p in (_RUNTIME, _PRONOIA, _SRC):
+    # `core`/`categorical`/`cog`/`zfc` <- komposos_core; `pronoia` <- pronoia;
+    # `komposos_wesys` (sheaf probe, grid_ricci, grid_spectral) <- src itself.
     if os.path.isdir(_p) and _p not in sys.path:
         sys.path.insert(0, _p)

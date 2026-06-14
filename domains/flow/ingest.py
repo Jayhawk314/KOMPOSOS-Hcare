@@ -228,6 +228,47 @@ def load_open_payments(path: str, *, source: str = "open_payments") -> Section:
 
 
 # ---------------------------------------------------------------------------
+# Provider money views (charge / allowed / payment) for the sheaf gauge
+# ---------------------------------------------------------------------------
+def load_provider_money_views(path: str):
+    """CMS by-Provider-and-Service -> three Sections over NPIs, one pass:
+
+        charge   = sum(Avg_Sbmtd_Chrg     x Tot_Srvcs)   (chargemaster)
+        allowed  = sum(Avg_Mdcr_Alowd_Amt x Tot_Srvcs)   (Medicare-allowed)
+        payment  = sum(Avg_Mdcr_Pymt_Amt  x Tot_Srvcs)   (Medicare-paid)
+
+    These are three measurements that should reconcile up to ONE global gauge
+    (the canonical charge->allowed->payment markup chain). The sheaf finds that
+    gauge and localizes providers whose chain breaks it -- a genuine 3-source
+    coherence question that pairwise ratios cannot answer.
+    """
+    charge: Dict[str, float] = {}
+    allowed: Dict[str, float] = {}
+    payment: Dict[str, float] = {}
+    with _open_text(path) as fh:
+        reader = csv.DictReader(fh)
+        f = reader.fieldnames or []
+        npi_c = _require(f, _NPI, "NPI")
+        srv_c = _require(f, ["Tot_Srvcs", "line_srvc_cnt"], "total services")
+        chg_c = _require(f, ["Avg_Sbmtd_Chrg", "average_submitted_chrg_amt"], "submitted charge")
+        alw_c = _require(f, ["Avg_Mdcr_Alowd_Amt", "average_Medicare_allowed_amt"], "allowed")
+        pay_c = _require(f, ["Avg_Mdcr_Pymt_Amt", "average_Medicare_payment_amt"], "payment")
+        for row in reader:
+            npi = str(row.get(npi_c, "")).strip()
+            if not npi:
+                continue
+            srv = _to_float(row.get(srv_c))
+            charge[npi] = charge.get(npi, 0.0) + _to_float(row.get(chg_c)) * srv
+            allowed[npi] = allowed.get(npi, 0.0) + _to_float(row.get(alw_c)) * srv
+            payment[npi] = payment.get(npi, 0.0) + _to_float(row.get(pay_c)) * srv
+    return {
+        "charge": Section(source="charge", values=charge, layer="3-provider"),
+        "allowed": Section(source="allowed", values=allowed, layer="3-provider"),
+        "payment": Section(source="payment", values=payment, layer="3-provider"),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Medicare Inpatient Hospitals by Provider and Service (CCN x DRG)
 # ---------------------------------------------------------------------------
 def load_inpatient(path: str):

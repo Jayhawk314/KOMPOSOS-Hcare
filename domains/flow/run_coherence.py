@@ -568,6 +568,46 @@ def run_trend_ma(geovar_path: str, years=None) -> int:
     return 0
 
 
+def run_sheaf(args) -> int:
+    """Cohomological coherence (H1 gauge). With --service+--summary: the
+    conservation pair (gauge absorbs suppression, residuals localize real
+    deviants). With --service only: the charge/allowed/payment 3-view gauge.
+    Else: synthetic 3-view demo with two planted offenders.
+    """
+    from domains.flow.sheaf import sheaf_coherence, synthetic_sections
+    if args.service and args.summary:
+        from domains.flow.ingest import load_provider_service, load_provider_summary
+        print(f"loading {args.service} (line items) + {args.summary} (aggregate)...",
+              flush=True)
+        secs = [load_provider_service(args.service), load_provider_summary(args.summary)]
+        mode = "conservation pair (line-items vs aggregate)"
+    elif args.service:
+        from domains.flow.ingest import load_provider_money_views
+        print(f"loading charge/allowed/payment views from {args.service} ...",
+              flush=True)
+        secs = list(load_provider_money_views(args.service).values())
+        mode = "charge/allowed/payment 3-view"
+    else:
+        secs = synthetic_sections()
+        mode = "synthetic 3-view (2 planted offenders)"
+        print("synthetic sheaf demo (use --service [--summary] for real data)")
+    print(f"  mode: {mode}; {len(secs)} sources\n", flush=True)
+
+    res = sheaf_coherence(secs)
+    print(res.summary())
+
+    # Contrast with the naive threshold (only meaningful for the conservation pair).
+    if len(secs) == 2:
+        from domains.flow.coherence import FlowCoherenceChecker
+        contra = sum(len(r.contradictions())
+                     for r in FlowCoherenceChecker(tolerance=0.02).check_all(secs))
+        gr = next(iter(res.offenders)).gauge_ratio if res.offenders else 0.0
+        print(f"\n  naive 0.02-tolerance check flags {contra:,} entities; the sheaf "
+              f"absorbs the\n  systematic scale (gauge ratio ~{gr:.2f}) and ranks "
+              "deviants by residual instead.")
+    return 0
+
+
 def run_hospital(path: Optional[str] = None) -> int:
     """Hospital price coherence ('same DRG, different price'). Real Inpatient
     PUF if a path is given, else synthetic."""
@@ -668,6 +708,10 @@ def main(argv=None) -> int:
     p.add_argument("--trend-ma", dest="trend_ma", metavar="GEOVAR_CSV",
                    help="multi-year MA overpayment trend from the FFS Geographic "
                         "Variation PUF (2014-2024 in one file)")
+    p.add_argument("--sheaf", action="store_true",
+                   help="cohomological coherence (H1 gauge): parameter-free, "
+                        "absorbs systematic scale, localizes real obstructions. "
+                        "Uses --service[+--summary], else synthetic")
     p.add_argument("--ledger", action="store_true",
                    help="THE UNIFIED LEAK LEDGER: run every detector (real where "
                         "data paths are given), assemble + rank + score + write "
@@ -742,6 +786,8 @@ def main(argv=None) -> int:
         return run_conflict(args)
     if args.coload:
         return run_coload(args)
+    if args.sheaf:
+        return run_sheaf(args)
     if args.trend_ma:
         return run_trend_ma(args.trend_ma)
     if args.hospital is not None:
