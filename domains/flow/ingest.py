@@ -228,6 +228,51 @@ def load_open_payments(path: str, *, source: str = "open_payments") -> Section:
 
 
 # ---------------------------------------------------------------------------
+# Medicare Inpatient Hospitals by Provider and Service (CCN x DRG)
+# ---------------------------------------------------------------------------
+def load_inpatient(path: str):
+    """Medicare Inpatient PUF -> list of per (CCN, DRG) records (dicts).
+
+    The price layer's real entry point: each row is a hospital (CCN) x DRG with
+    discharges, chargemaster charge, total payment, and Medicare payment. Keyed
+    by CCN, this starts the hospital (CCN) spine. Fields:
+        ccn, name, state, drg, drg_desc, discharges, charge, total_pymt, mdcr_pymt
+    """
+    out = []
+    with _open_text(path) as fh:
+        reader = csv.DictReader(fh)
+        f = reader.fieldnames or []
+        ccn_c = _require(f, ["Rndrng_Prvdr_CCN", "provider_id", "ccn"], "CCN")
+        nm_c = _resolve(f, ["Rndrng_Prvdr_Org_Name", "provider_name"])
+        st_c = _resolve(f, ["Rndrng_Prvdr_State_Abrvtn", "provider_state"])
+        drg_c = _require(f, ["DRG_Cd", "DRG_Definition", "drg_code"], "DRG code")
+        dd_c = _resolve(f, ["DRG_Desc", "DRG_Definition"])
+        dsc_c = _require(f, ["Tot_Dschrgs", "total_discharges"], "discharges")
+        chg_c = _require(f, ["Avg_Submtd_Cvrd_Chrg",
+                             "average_covered_charges"], "avg covered charge")
+        tot_c = _require(f, ["Avg_Tot_Pymt_Amt", "average_total_payments"],
+                         "avg total payment")
+        mdc_c = _resolve(f, ["Avg_Mdcr_Pymt_Amt", "average_medicare_payments"])
+        for row in reader:
+            ccn = str(row.get(ccn_c, "")).strip()
+            drg = str(row.get(drg_c, "")).strip()
+            if not ccn or not drg:
+                continue
+            out.append({
+                "ccn": ccn,
+                "name": str(row.get(nm_c, "")).strip() if nm_c else "",
+                "state": str(row.get(st_c, "")).strip() if st_c else "",
+                "drg": drg,
+                "drg_desc": str(row.get(dd_c, "")).strip() if dd_c else "",
+                "discharges": _to_float(row.get(dsc_c)),
+                "charge": _to_float(row.get(chg_c)),
+                "total_pymt": _to_float(row.get(tot_c)),
+                "mdcr_pymt": _to_float(row.get(mdc_c)) if mdc_c else 0.0,
+            })
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Drug-level joins: Open Payments (by drug) and Part D (by Provider and Drug)
 # ---------------------------------------------------------------------------
 def _norm_drug(s: object) -> str:
@@ -847,6 +892,21 @@ def write_fixtures(directory: str) -> Dict[str, str]:
             ["101", "Eliquis", "apixaban", 800000],
             ["103", "eliquis", "apixaban", 90000],      # unpaid prescriber
             ["104", "Ozempic", "semaglutide", 500000],  # different drug
+        ],
+    )
+    # Medicare Inpatient PUF (hospital CCN x DRG) for the price layer.
+    paths["inpatient"] = _w(
+        "inpatient.csv",
+        ["Rndrng_Prvdr_CCN", "Rndrng_Prvdr_Org_Name", "Rndrng_Prvdr_State_Abrvtn",
+         "DRG_Cd", "DRG_Desc", "Tot_Dschrgs", "Avg_Submtd_Cvrd_Chrg",
+         "Avg_Tot_Pymt_Amt", "Avg_Mdcr_Pymt_Amt"],
+        [
+            ["450001", "TX Hosp A", "TX", "470", "JOINT REPL", 100, 60000, 15000, 13500],
+            ["450002", "TX Hosp B", "TX", "470", "JOINT REPL", 100, 64000, 16000, 14400],
+            ["450003", "TX Hosp C", "TX", "470", "JOINT REPL", 100, 56000, 14000, 12600],
+            ["450004", "TX Hosp D", "TX", "470", "JOINT REPL", 100, 62000, 15500, 13950],
+            ["450005", "TX Hosp E", "TX", "470", "JOINT REPL", 100, 58000, 14800, 13320],
+            ["450099", "TX Pricey", "TX", "470", "JOINT REPL", 200, 300000, 40000, 36000],
         ],
     )
     # SSA<->FIPS crosswalk: ratebook SSA codes -> GeoVar county FIPS codes.

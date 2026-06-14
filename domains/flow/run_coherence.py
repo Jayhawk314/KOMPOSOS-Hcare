@@ -509,6 +509,16 @@ def run_ledger(args) -> int:
     from domains.flow.nash_sheaf import NashSheaf, synthetic_observations
     led.extend(L.from_nash(NashSheaf().analyze(synthetic_observations())))
 
+    # -- Hospital price coherence (real if --hospital <csv>) -----------------
+    from domains.flow.hospital import HospitalPriceCoherence, synthetic_records
+    if args.hospital:
+        from domains.flow.ingest import load_inpatient
+        print("ledger: hospital price coherence (real)...", flush=True)
+        hrecs = load_inpatient(args.hospital)
+    else:
+        hrecs = synthetic_records()
+    led.extend(L.from_hospital(HospitalPriceCoherence().analyze(hrecs)))
+
     print("\n" + L.summarize(led))
 
     stamp = datetime.date.today().isoformat()
@@ -570,6 +580,30 @@ def run_conflict_drug(args) -> int:
     risks = [m for m in cat.morphisms() if m.name == "drug_conflict_risk"]
     print(f"\nflagged (provider,drug) pairs: {len(report.flagged):,}  "
           f"(wrote {len(risks)} to Category, {two_cells} 2-cells in h2K)")
+    return 0
+
+
+def run_hospital(path: Optional[str] = None) -> int:
+    """Hospital price coherence ('same DRG, different price'). Real Inpatient
+    PUF if a path is given, else synthetic."""
+    from domains.flow.hospital import (
+        HospitalPriceCoherence, summarize as hp_summarize, synthetic_records,
+    )
+    cat = Category(db_path=":memory:")
+    if path:
+        from domains.flow.ingest import load_inpatient
+        print(f"loading Medicare Inpatient PUF {path} ...", flush=True)
+        records = load_inpatient(path)
+        print(f"  {len(records):,} (hospital, DRG) records\n", flush=True)
+    else:
+        records = synthetic_records()
+        print("synthetic hospital records (use --hospital <inpatient.csv> for real)\n")
+    engine = HospitalPriceCoherence(category=cat)
+    report = engine.analyze(records)
+    print(hp_summarize(report))
+    edges = [m for m in cat.morphisms() if m.name.startswith("overpriced_for")]
+    print(f"\nCategory: {len(cat.objects())} objects, {len(cat.morphisms())} "
+          f"morphisms ({len(edges)} overpriced_for edges)")
     return 0
 
 
@@ -643,6 +677,9 @@ def main(argv=None) -> int:
                         "by-Provider-and-Service CSV, else synthetic")
     p.add_argument("--nash-sheaf", action="store_true",
                    help="cross-market strategic-gaming detection (Nash sheaf)")
+    p.add_argument("--hospital", nargs="?", const="", metavar="CSV",
+                   help="hospital price coherence ('same DRG, different price'); "
+                        "optional Medicare Inpatient PUF CSV, else synthetic")
     p.add_argument("--ledger", action="store_true",
                    help="THE UNIFIED LEAK LEDGER: run every detector (real where "
                         "data paths are given), assemble + rank + score + write "
@@ -697,6 +734,8 @@ def main(argv=None) -> int:
         return run_conflict(args)
     if args.coload:
         return run_coload(args)
+    if args.hospital is not None:
+        return run_hospital(args.hospital or None)
     if args.nash_sheaf:
         return run_nash_sheaf()
     if args.demo_real:

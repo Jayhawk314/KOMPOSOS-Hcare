@@ -37,6 +37,7 @@ CONF = {
     "npi_conflict": 0.40,        # association, not drug-controlled
     "outlier": 0.45,             # peer-relative, review
     "nash_gaming": 0.50,         # novel strategic signal
+    "hospital_price": 0.45,      # paid above same-state peer; case-mix caveat
     "billing_conservation": 0.12,  # 2024 gap is a one-directional data artifact
 }
 
@@ -171,6 +172,21 @@ def from_conservation(pair_results) -> List[Finding]:
             basis=f"{len(contra):,} contradictions",
             caveat=("one-directional -> small-cell suppression artifact, not waste"
                     if one_dir else "two-sided residual; investigate"),
+        ))
+    return out
+
+
+def from_hospital(report) -> List[Finding]:
+    """Hospitals paid above same-state peers for the same DRG (excess dollars)."""
+    out = []
+    for o in report.outliers:
+        out.append(Finding(
+            detector="hospital_price", entity=f"ccn:{o.ccn}|drg:{o.drg}",
+            category="paid above same-state peers for the same DRG",
+            dollars=o.excess, confidence=CONF["hospital_price"],
+            basis=f"{o.ratio:.1f}x peer median, {int(o.discharges)} discharges "
+                  f"({o.name[:24]}, {o.state})",
+            caveat="case-mix/teaching/DSH/wage-index may explain; review",
         ))
     return out
 
