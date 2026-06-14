@@ -674,6 +674,11 @@ def main(argv=None) -> int:
         return 0
     if args.synthetic:
         return run_synthetic()
+    # The ledger orchestrates several detectors and reuses their data flags
+    # (--ma-geovar, --service/--summary, --open-payments, ...), so it must be
+    # dispatched BEFORE the individual-detector checks below.
+    if args.ledger:
+        return run_ledger(args)
     if args.ma_geovar:
         return run_ma_geovar(args.ma_geovar, year=args.ma_year,
                              benchmark_ratio=args.ma_benchmark_ratio,
@@ -686,8 +691,6 @@ def main(argv=None) -> int:
         return run_ma(args.ma or None)
     if args.outliers is not None:
         return run_outliers(args.outliers or None)
-    if args.ledger:
-        return run_ledger(args)
     if args.conflict_drug:
         return run_conflict_drug(args)
     if args.conflict:
