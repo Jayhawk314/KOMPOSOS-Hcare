@@ -106,20 +106,52 @@ def evaluate_grid(engine: ScenarioEngine, grid: List[PolicyLevers],
     return states
 
 
+def _aggressiveness(levers: PolicyLevers) -> tuple:
+    """Sort key for 'simplest/least aggressive' policy (fewer, smaller lever moves
+    from baseline). Used to pick a canonical representative among ties."""
+    base = PolicyLevers.baseline()
+    moves = sum([
+        levers.coding_adjustment != base.coding_adjustment,
+        levers.audit_multiplier != base.audit_multiplier,
+        levers.penalty_multiplier != base.penalty_multiplier,
+        levers.benchmark_cap is not None,
+    ])
+    cap_pen = (1.0 - levers.benchmark_cap) if levers.benchmark_cap is not None else 0.0
+    return (moves, levers.coding_adjustment, levers.audit_multiplier,
+            levers.penalty_multiplier, cap_pen)
+
+
 def get_pareto_frontier(states: List[EvaluatedState]) -> List[EvaluatedState]:
-    """Filter the evaluated grid down to the non-dominated Pareto frontier."""
-    frontier = []
-    for state in states:
-        dominated = False
-        for other in states:
-            if other.dominates(state):
-                dominated = True
-                break
-        if not dominated:
-            frontier.append(state)
-            
-    # Sort by saving for display
-    return sorted(frontier, key=lambda s: s.saving_vs_base)
+    """Filter the evaluated grid to the non-dominated Pareto frontier, then
+    collapse degenerate ties (lever combos producing the SAME outcome because the
+    extra levers don't bind -- e.g. audit/penalty under a benchmark cap that
+    already minimizes coding) to their simplest representative."""
+    frontier = [s for s in states
+                if not any(other.dominates(s) for other in states)]
+
+    # Collapse only TRULY identical outcomes (non-binding levers produce
+    # bit-identical results), keeping the simplest lever combo.
+    best: Dict[tuple, EvaluatedState] = {}
+    for s in frontier:
+        key = (round(s.saving_vs_base, 2), s.enrollment_vs_base,
+               round(s.rebate_vs_base, 2))
+        cur = best.get(key)
+        if cur is None or _aggressiveness(s.levers) < _aggressiveness(cur.levers):
+            best[key] = s
+    return sorted(best.values(), key=lambda s: s.saving_vs_base)
+
+
+def recommend(frontier: List[EvaluatedState], target_saving: float,
+              min_enrollment: int) -> Optional[EvaluatedState]:
+    """The honest answer: among frontier policies that MEET the constraints
+    (>= target saving AND >= min enrollment), pick the one with the least
+    beneficiary harm (smallest rebate loss), tie-broken by simplicity. No
+    'confidence' theater -- just the feasible, least-harm policy."""
+    feasible = [s for s in frontier
+                if s.saving_vs_base >= target_saving and s.enrollment >= min_enrollment]
+    if not feasible:
+        return None
+    return min(feasible, key=lambda s: (-s.rebate_vs_base, _aggressiveness(s.levers)))
 
 
 # ---------------------------------------------------------------------------
@@ -227,34 +259,64 @@ def run_optimus_search(engine: ScenarioEngine, market_model: MarketModel,
     return frontier, optimal_path_summary
 
 
-def summarize_pareto(frontier: List[EvaluatedState], optimal_path: Optional[str]) -> str:
-    """Format the Pareto frontier and OPTIMUS results for CLI output."""
+def _lever_label(levers: PolicyLevers) -> str:
+    b_cap = f"cap={levers.benchmark_cap:.2f}" if levers.benchmark_cap else "no cap"
+    return (f"adj={levers.coding_adjustment:.2f}, audit={levers.audit_multiplier}x, "
+            f"pen={levers.penalty_multiplier}x, {b_cap}")
+
+
+def summarize_pareto(frontier: List[EvaluatedState], *,
+                     target_saving: float, min_enrollment: int,
+                     optimal_path: Optional[str] = None) -> str:
+    """Format the Pareto frontier, leading with the honest recommendation (the
+    feasible least-harm policy). ``optimal_path`` is an OPTIONAL experimental
+    appendix, not the headline."""
     rows = [("policy levers", "fed saving", "enrollment", "rebate chg")]
-    
+    below_ffs = False
     for s in frontier:
-        b_cap = f"cap={s.levers.benchmark_cap:.2f}" if s.levers.benchmark_cap else "no cap"
-        label = f"adj={s.levers.coding_adjustment:.2f}, audit={s.levers.audit_multiplier}x, pen={s.levers.penalty_multiplier}x, {b_cap}"
+        # A "saving" larger than baseline overpayment means overpayment went
+        # negative -- MA below FFS, an out-of-validation regime; flag it.
+        flag = ""
+        if s.overpayment < 0:
+            below_ffs = True
+            flag = " *"
         rows.append((
-            label,
-            f"${s.saving_vs_base/1e9:+,.1f}B",
+            _lever_label(s.levers),
+            f"${s.saving_vs_base/1e9:+,.1f}B{flag}",
             f"{s.enrollment:,} ({s.enrollment_vs_base:+,})",
             f"${s.rebate_vs_base/1e9:+,.1f}B"
         ))
-        
+
     w = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
-    lines = ["Multi-Objective Pareto Frontier (Non-dominated policies)", "=" * (sum(w) + len(w) * 2)]
-    
+    lines = ["Multi-objective Pareto frontier (federal saving x enrollment x rebate)",
+             "=" * (sum(w) + len(w) * 2)]
     for i, row in enumerate(rows):
         lines.append("  " + "  ".join(c.ljust(w[j]) for j, c in enumerate(row)))
         if i == 0:
             lines.append("  " + "  ".join("-" * w[j] for j in range(len(w))))
-            
     lines.append("-" * (sum(w) + len(w) * 2))
-    
-    if optimal_path:
-        lines.append("\n" + optimal_path)
+    if below_ffs:
+        lines.append("  * saving exceeds baseline overpayment -> that row prices MA "
+                     "BELOW FFS, an\n    out-of-validation regime (extreme "
+                     "extrapolation); read those rows with caution.")
+
+    # The honest recommendation -- no confidence theater.
+    rec = recommend(frontier, target_saving, min_enrollment)
+    lines.append(f"\nGoal: >= ${target_saving/1e9:,.1f}B saving AND "
+                 f">= {min_enrollment:,} enrollment.")
+    if rec is None:
+        lines.append("RECOMMENDATION: no policy on the frontier meets BOTH "
+                     "constraints -- they trade off; relax one.")
     else:
-        lines.append("\nOPTIMUS could not find a path to the requested target (constraints may be too strict).")
-        
+        lines.append(f"RECOMMENDATION (feasible, least beneficiary harm): "
+                     f"{_lever_label(rec.levers)}")
+        cav = "  [below-FFS regime -- caution]" if rec.overpayment < 0 else ""
+        lines.append(f"  -> federal saving ${rec.saving_vs_base/1e9:+,.1f}B, "
+                     f"enrollment {rec.enrollment:,} ({rec.enrollment_vs_base:+,}), "
+                     f"rebate {rec.rebate_vs_base/1e9:+,.1f}B{cav}")
+    if optimal_path:
+        lines.append("\n[experimental] OPTIMUS categorical pathfinder (illustrative "
+                     "only; the confidence\n  weights are heuristic, not "
+                     "calibrated -- not a result):\n" + optimal_path)
     return "\n".join(lines)
 

@@ -7,6 +7,20 @@ This document synthesizes the empirical findings, validation metrics, and predic
 
 ---
 
+## 0. Review corrections (2026-06-15)
+
+A post-implementation review corrected two issues; this section supersedes any conflicting text below.
+
+1. **Rebate accounting (Phase D/H).** The first Phase H cut conflated the statutory 65% rebate share with the 15% competition pass-through and changed the formula, inflating the **real-data** baseline rebate to ~$137B (vs the validated ~$93.5B / ~$2,800-per-enrollee; real ~$60–70B). **Fixed:** the reported rebate is again the Phase D statutory accounting (`0.65 × max(0, benchmark − bid)`, risk-adjusted); the Phase H demand layer now moves **enrollment only**, not the rebate level. Baseline rebate is back to $93.5B.
+
+2. **Phase I "OPTIMUS categorical gradient descent" — demoted.** Its "Confidence" number is built from heuristic, uncalibrated weights and was unstable across runs (0.37 / 0.40 / 0.49), and its reported "optimal path" contradicted the actual tool output between runs (coding-adjustment vs benchmark-cap). It is **not a result** and is now an opt-in `--experimental` appendix. The real Phase I output is the **Pareto frontier + an honest recommendation**: among policies meeting the goal, pick the feasible one with least beneficiary harm (no confidence theater). See the corrected §5.
+
+3. **Phase H status.** The demand/competition layer is **modeled, not calibrated** — enrollment elasticity and competition are exposed assumptions, not yet run through the Phase G bands. Only the direction is claimed.
+
+Note on scale: §§1–4 tables are the **synthetic calibration-gate demo** (illustrative); real-data magnitudes are ~10× (national baseline overpayment $107.3B, rebate $93.5B). The analyses hold at both scales.
+
+---
+
 ## 1. Validation & Backtesting (Accuracy)
 
 Before predicting counterfactuals, a model must prove it can reproduce reality and that its predictions are structurally stable. We use categorical hold-out cross-validation and parameter sweeps to quantify the engine's accuracy.
@@ -119,33 +133,32 @@ This is the most dangerous blind spot in single-actor policy making. If CMS forc
 
 ## 5. The Pareto Frontier (Multi-Objective Optimization)
 
-Given that policies have trade-offs (Phase H proved that rebate cuts reduce enrollment), how do we find the optimal path? We mapped the policy space to a `KOMPOSOS-IV Category` and used the `OPTIMUS` categorical gradient descent engine to navigate the Pareto Frontier.
+Given that policies have trade-offs (Phase H: rebate cuts reduce enrollment), how do we pick a policy for a stated goal? We sweep the lever space, score each point on federal saving × enrollment × rebate via the Phase H chain, keep the non-dominated **Pareto frontier**, and recommend the **feasible least-beneficiary-harm** policy. (Standard multi-objective optimization — no "gradient descent confidence.")
 
-**Experiment Command:** `python -m domains.flow.run_coherence --pareto --target-saving 5000000000 --patient-elasticity 2.0`
+**Experiment Command (real data):** `python -m domains.flow.run_coherence --pareto --target-saving 8000000000 --min-enrollment 30000000 --market-competition 1.5 --patient-elasticity 2.0 --ma-geovar ... --ma-ratebook ... --ma-crosswalk ...`
 
-### Empirical Output:
+### Empirical Output (real 2024 data, abridged):
 ```text
-Multi-Objective Pareto Frontier (Non-dominated policies)
-========================================================================================
-  policy levers                             fed saving  enrollment            rebate chg
-  ----------------------------------------  ----------  --------------------  ----------
-  adj=0.06, audit=1.0x, pen=1.0x, no cap    $+0.0B      3,000,000 (+0)        $+0.0B
-  adj=0.15, audit=1.0x, pen=1.0x, no cap    $+4.3B      2,990,038 (-9,962)    $-0.1B
-  adj=0.20, audit=1.0x, pen=1.0x, no cap    $+6.7B      2,983,969 (-16,031)   $-0.1B
-  adj=0.20, audit=1.0x, pen=1.0x, cap=1.05  $+10.0B     2,822,318 (-177,682)  $-1.2B
-  adj=0.20, audit=5.0x, pen=3.0x, cap=1.00  $+14.6B     2,570,035 (-429,965)  $-2.7B
+Multi-objective Pareto frontier (federal saving x enrollment x rebate)
+  policy levers                             fed saving  enrollment              rebate chg
+  adj=0.10, audit=1.0x, pen=1.0x, no cap    $+23.8B     32,963,035 (-38,700)    $-0.3B
+  adj=0.20, audit=1.0x, pen=1.0x, no cap    $+81.7B     32,856,645 (-145,090)   $-1.0B
+  adj=0.20, audit=1.0x, pen=3.0x, no cap    $+105.5B    31,631,269 (-1,370,466) $-9.6B
+  adj=0.20, audit=1.0x, pen=2.0x, cap=1.05  $+143.7B *  24,901,000 (-8,100,735) $-46.6B
+  adj=0.20, audit=1.0x, pen=1.0x, cap=1.00  $+184.1B *  20,877,850 (-12,123,885) $-64.6B
+  * = prices MA below FFS (out-of-validation regime; read with caution)
 
-OPTIMUS categorical gradient descent found a path (Confidence: 0.40):
-  -> step_c0.059_a1.0_p1.0_bNone_to_c0.200_a1.0_p1.0_bNone
-  -> reaches_c0.200_a1.0_p1.0_bNone
+Goal: >= $8.0B saving AND >= 30,000,000 enrollment.
+RECOMMENDATION (feasible, least beneficiary harm): adj=0.10, audit=1.0x, pen=1.0x, no cap
+  -> federal saving $+23.8B, enrollment 32,963,035 (-38,700), rebate -0.3B
 ```
 
-### Analysis: Categorical Pathfinding
-The engine evaluated the full cross-product of coding adjustments, audit multipliers, and benchmark caps, retaining only the non-dominated configurations (the Pareto frontier). 
+### Analysis: the honest frontier
+The frontier confirms the §2 lesson at fleet scale: a **modest coding adjustment** (0.10) reaches the saving goal with almost no beneficiary harm (−38,700 enrollees, −$0.3B rebate), while **benchmark caps** buy larger headline savings only by shedding 8–12M enrollees and gutting the rebate pool — and the largest "savings" (`*` rows) only arise by pricing MA below FFS, an extreme extrapolation the engine is not validated for. The recommendation is just the feasible least-harm point; there is no categorical magic in it, and that is the point.
 
-When asked to find a path to a $5B saving without collapsing enrollment, the `OPTIMUS` engine bypassed the blunt instruments (benchmark caps, which devastate enrollment) and plotted a trajectory through the `coding_adjustment` dimension (`c0.059` -> `c0.200`). The gradient descent correctly identified that adjusting the statutory coding haircut provides the maximal federal saving per unit of beneficiary harm.
+*(An experimental categorical pathfinder over the same grid is available behind `--experimental`; its weights are heuristic and its output is illustrative, not a result.)*
 
 ---
 
 ## Conclusion
-The HCARE engine is a complete, scientifically-validated decision support system. It proves that Medicare Advantage cannot be audited with arithmetic; it must be modeled as a composite game. The outputs generated here are ready to support real-world constitutional choices regarding taxpayer cost, patient access, and insurer efficiency.
+The HCARE engine is a transparent, baseline-calibrated "what-if" calculator for the MA money game. It treats Medicare Advantage as a composite game (coding intensity is endogenous; levers shift the equilibrium), reports conclusions as uncertainty bands, and is honest about its boundaries: federal dollars and incentives are the credible output; premiums/rebates are a stated proxy; the Phase H demand layer is modeled-not-calibrated; and patient health is out of scope (no outcome data in the money graph). It does not "audit MA with arithmetic" — but neither does it claim more than a calibrated model can support.

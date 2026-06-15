@@ -58,6 +58,7 @@ from domains.flow.market import MarketModel, PatientModel
 class RebateModel:
     """Exposed accounting parameters mapping the equilibrium to beneficiary value."""
 
+    rebate_share: float = 0.65       # statutory star-rating rebate % of (benchmark-bid)
     bid_to_ffs: float = 0.83         # standardized bid as a share of FFS cost
     premium_share: float = 0.30      # rebate share to premium/cost-sharing buydown
 
@@ -79,46 +80,44 @@ def beneficiary_outcome(engine: ScenarioEngine, levers: PolicyLevers,
                         market_model: Optional[MarketModel] = None,
                         patient_model: Optional[PatientModel] = None,
                         ) -> BeneficiaryOutcome:
-    """Rebate-funded beneficiary value under a scenario (recomputes er exactly as
-    ``ScenarioEngine.run`` does, so it is consistent with the reported money)."""
+    """Rebate-funded beneficiary value under a scenario.
+
+    The reported rebate VALUE is the Phase-D statutory accounting (restored, so
+    the baseline reproduces the ~$93.5B / ~$2,800-per-enrollee anchor):
+    ``rebate_share * max(0, benchmark - bid)`` per enrollee, risk-adjusted. The
+    Phase-H demand side then makes ENROLLMENT respond to the change in that rebate
+    vs baseline, with market competition amplifying how strongly patients respond
+    (competitive markets are more elastic). The two concerns are kept separate --
+    competition does NOT inflate the rebate level (the bug it replaced)."""
     rb = rebate or RebateModel()
-    mm = market_model or MarketModel(baseline_pass_through=0.65) # Fallback to 0.65 for backward compat
+    mm = market_model or MarketModel()
     ptm = patient_model or PatientModel()
-    
+    # Competition amplifies demand elasticity (competitive markets are more elastic).
+    ptm_eff = PatientModel(
+        demand_elasticity=ptm.demand_elasticity * max(0.0, mm.competition_index))
+    base_levers = PolicyLevers.baseline()
+
+    def _rebate_pc(lev: PolicyLevers, audit: Optional[float]) -> float:
+        """Statutory rebate per enrollee, risk-adjusted (Phase-D accounting)."""
+        er = engine.model.risk_score(m, lev, audit)
+        bm = m.benchmark_per_capita
+        if lev.benchmark_cap is not None:
+            bm = min(bm, lev.benchmark_cap * m.ffs_per_capita)
+        bid = rb.bid_to_ffs * m.ffs_per_capita
+        return rb.rebate_share * max(0.0, bm - bid) * er
+
     total_rebate = 0.0
     total_enr = 0
     for m in engine.markets:
-        # Get base rebate for enrollment elasticity
-        base_levers = PolicyLevers.baseline()
-        base_p = engine.model.upcoding(m, base_levers)
-        base_er = 1.0 + engine.model.kappa * base_p
-        base_bm = m.benchmark_per_capita
-        base_bid = rb.bid_to_ffs * m.ffs_per_capita
-        base_margin = max(0.0, base_bm * base_er - base_bid)
-        base_rebate = mm.effective_pass_through * base_margin
-        
         au = audit_by_geo.get(m.geo) if audit_by_geo else None
-        
-        # Note: In Phase H, we expect engine.markets to already have the
-        # updated enrollment if run_chain was used. If this is called directly
-        # on the base ScenarioEngine, we calculate p* using the bidirectional solver.
-        p_star = engine.model.upcoding(m, levers, au, ptm, mm, base_rebate, m.ffs_per_capita)
-        er = 1.0 + engine.model.kappa * p_star
-        
-        bm = m.benchmark_per_capita
-        if levers.benchmark_cap is not None:
-            bm = min(bm, levers.benchmark_cap * m.ffs_per_capita)
-        bid = rb.bid_to_ffs * m.ffs_per_capita
-        
-        margin_pc = max(0.0, bm * er - bid)
-        rebate_pc = mm.effective_pass_through * margin_pc        # standardized
-        
-        # Adjust enrollment
-        enr = ptm.calculate_enrollment(m.enrollment, base_rebate, rebate_pc, m.ffs_per_capita)
-        
-        total_rebate += rebate_pc * enr           # risk-adjusted $
+        base_rebate_pc = _rebate_pc(base_levers, None)
+        rebate_pc = _rebate_pc(levers, au)
+        # Enrollment responds to the change in rebate generosity vs baseline.
+        enr = ptm_eff.calculate_enrollment(
+            m.enrollment, base_rebate_pc, rebate_pc, m.ffs_per_capita)
+        total_rebate += rebate_pc * enr
         total_enr += enr
-        
+
     enr = total_enr or 1
     premium = total_rebate * rb.premium_share
     return BeneficiaryOutcome(

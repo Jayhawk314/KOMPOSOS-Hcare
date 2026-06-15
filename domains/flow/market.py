@@ -19,6 +19,19 @@ The Patient Demand Model:
 Beneficiaries respond to the generosity of the rebate (premium cuts, extra
 benefits). We model enrollment as elastic to the rebate value relative to
 the FFS cost basis.
+
+HONEST STATUS (read before trusting magnitudes):
+------------------------------------------------
+Unlike the Phase A coding response (calibrated so the baseline reproduces the
+validated ~$107B), the Phase H demand/competition layer is **modeled, not
+calibrated**: the enrollment elasticity and competition index are exposed
+ASSUMPTIONS, not fit to data, and the bidirectional coding<->volume feedback is
+a second-order effect not yet run through the Phase G uncertainty bands. Only the
+DIRECTION is claimed (lower rebate -> lower enrollment; more competition -> more
+elastic). The pass-through floor (0.15) is anchored to the Health Affairs
+finding; sweep the rest before quoting any magnitude. The reported rebate DOLLARS
+remain the Phase D statutory accounting -- this layer moves enrollment, it does
+NOT set the rebate level.
 """
 
 from __future__ import annotations
