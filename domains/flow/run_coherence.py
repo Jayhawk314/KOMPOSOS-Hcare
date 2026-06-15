@@ -887,6 +887,37 @@ def run_demo_real() -> int:
     return run_real(_Args())
 
 
+def run_pareto(args) -> int:
+    """PHASE I: The Pareto Optimizer.
+    
+    Sweeps the policy space to find non-dominated outcomes, then uses OPTIMUS
+    categorical gradient descent to find the optimal path to a specified target.
+    """
+    from domains.flow.pareto import run_optimus_search, summarize_pareto
+    from domains.flow.market import MarketModel, PatientModel
+    
+    eng, target, src = _scenario_engine_from_args(args)
+    print(f"  markets: {src}; baseline calibrated to ${target/1e9:,.1f}B\n", flush=True)
+    
+    market_model = MarketModel(competition_index=args.market_competition)
+    patient_model = PatientModel(demand_elasticity=args.patient_elasticity)
+    
+    # Defaults: Aim for 5B saving with no enrollment drop
+    target_saving = args.target_saving if args.target_saving is not None else 5_000_000_000.0
+    
+    # Enrollment baseline needs to be calculated to set default min_enrollment
+    base_enr = sum(m.enrollment for m in eng.markets)
+    min_enrollment = args.min_enrollment if args.min_enrollment is not None else base_enr
+    
+    print(f"Optimizing for Target: >${target_saving/1e9:,.1f}B saving, >= {min_enrollment:,} enrollment...")
+    print(f"Using Patient elasticity = {args.patient_elasticity}, Market competition = {args.market_competition}\n")
+    
+    frontier, opt_path = run_optimus_search(eng, market_model, patient_model, target_saving, min_enrollment)
+    
+    print(summarize_pareto(frontier, opt_path))
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="flow domain coherence check")
     p.add_argument("--synthetic", action="store_true",
@@ -929,6 +960,12 @@ def main(argv=None) -> int:
                         "(Nash best response to the levers), calibrated to the "
                         "forensic baseline, then policy-lever comparison. Real "
                         "with --ma-geovar [--ma-ratebook --ma-crosswalk], else synthetic")
+    p.add_argument("--pareto", action="store_true",
+                   help="PHASE I: The Pareto Optimizer. Sweeps policy space and uses OPTIMUS to find optimal path to target.")
+    p.add_argument("--target-saving", type=float, default=None,
+                   help="Phase I: Target federal saving constraint (dollars) for --pareto.")
+    p.add_argument("--min-enrollment", type=int, default=None,
+                   help="Phase I: Minimum enrollment constraint for --pareto.")
     p.add_argument("--patient-elasticity", type=float, default=0.0,
                    help="Phase H: Enrollment change % per 1% change in rebate ratio. "
                         "Default 0.0 (inelastic). Set >0 to enable bidirectional feedback.")
@@ -1029,6 +1066,8 @@ def main(argv=None) -> int:
         return run_propagate(args)
     if args.scenario:
         return run_scenario(args)
+    if args.pareto:
+        return run_pareto(args)
     if args.ma_geovar:
         return run_ma_geovar(args.ma_geovar, year=args.ma_year,
                              benchmark_ratio=args.ma_benchmark_ratio,
