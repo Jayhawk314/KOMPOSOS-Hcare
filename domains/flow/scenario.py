@@ -119,6 +119,8 @@ def markets_from_contracts(contracts: Sequence[MAContract]) -> List[Market]:
 # ---------------------------------------------------------------------------
 # The behavioral model: endogenous coding intensity
 # ---------------------------------------------------------------------------
+from domains.flow.market import MarketModel, PatientModel
+
 @dataclass(frozen=True)
 class BehavioralModel:
     """Calibrated inspection-game response. ``base_deter`` is the anchor set by
@@ -129,23 +131,70 @@ class BehavioralModel:
     kappa: float = DEFAULT_KAPPA
 
     def upcoding(self, market: Market, levers: PolicyLevers,
-                 audit_override: Optional[float] = None) -> float:
+                 audit_override: Optional[float] = None,
+                 patient_model: Optional[PatientModel] = None,
+                 market_model: Optional[MarketModel] = None,
+                 base_rebate_pc: float = 0.0,
+                 ffs_cost: float = 0.0) -> float:
         """Equilibrium upcoding propensity p* in [0, 1) for this market+levers.
 
         ``audit_override`` replaces the uniform national ``audit_multiplier`` with
         a per-market value -- this is the hook the Phase C Kan propagation uses to
         push a national audit budget down to state-specific deterrence.
+        
+        If patient_model and market_model are provided, solves the Nash equilibrium
+        considering the volume boost from rebate-induced enrollment.
         """
         h = self._effective_headroom(market, levers)
         g = self.elasticity * h * (1.0 - levers.coding_adjustment)
         audit = levers.audit_multiplier if audit_override is None else audit_override
         d = self.base_deter * max(0.0, audit) * max(0.0, levers.penalty_multiplier)
-        return g / (g + d + 1e-12)
+        
+        if patient_model is None or market_model is None or patient_model.demand_elasticity <= 0.0:
+            # Phase A linear baseline
+            return g / (g + d + 1e-12)
+            
+        # Phase H Bidirectional Nash Solver
+        # The plan optimizes total margin: Margin = M_per_capita * Enrollment
+        # Where Enrollment is a function of Rebate, and Rebate is a function of Margin.
+        # This requires an iterative best-response to find the stable p*.
+        
+        # Helper to compute rebate given a p*
+        def _rebate(p_star: float) -> float:
+            er = 1.0 + self.kappa * p_star
+            bm = market.benchmark_per_capita
+            if levers.benchmark_cap is not None:
+                bm = min(bm, levers.benchmark_cap * market.ffs_per_capita)
+            # Proxy bid to calculate margin (Phase D defaults)
+            bid = 0.83 * market.ffs_per_capita
+            margin_pc = max(0.0, bm * er - bid)
+            return market_model.effective_pass_through * margin_pc
+
+        p_current = g / (g + d + 1e-12) # Start at linear baseline
+        for _ in range(50): # Iterative best response
+            r_current = _rebate(p_current)
+            enr_mult = 1.0 + patient_model.demand_elasticity * ((r_current - base_rebate_pc) / max(1e-9, ffs_cost))
+            
+            # The marginal value of coding increases if enrollment is elastic
+            # We approximate the new marginal gain
+            g_elastic = g * max(0.1, enr_mult)
+            p_next = g_elastic / (g_elastic + d + 1e-12)
+            
+            if abs(p_next - p_current) < 1e-5:
+                return p_next
+            p_current = p_next
+            
+        return p_current
 
     def risk_score(self, market: Market, levers: PolicyLevers,
-                   audit_override: Optional[float] = None) -> float:
+                   audit_override: Optional[float] = None,
+                   patient_model: Optional[PatientModel] = None,
+                   market_model: Optional[MarketModel] = None,
+                   base_rebate_pc: float = 0.0,
+                   ffs_cost: float = 0.0) -> float:
         """Endogenous MA risk score er = 1 + kappa * p* (the former fixed 1.20)."""
-        return 1.0 + self.kappa * self.upcoding(market, levers, audit_override)
+        return 1.0 + self.kappa * self.upcoding(
+            market, levers, audit_override, patient_model, market_model, base_rebate_pc, ffs_cost)
 
     def _effective_headroom(self, market: Market, levers: PolicyLevers) -> float:
         h = market.headroom

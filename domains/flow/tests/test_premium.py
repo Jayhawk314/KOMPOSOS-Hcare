@@ -41,14 +41,7 @@ def test_baseline_rebate_positive_and_split_consistent():
                - ben.rebate_total) < 1.0
 
 
-def test_rebate_scales_with_rebate_share():
-    eng = _engine()
-    lo = beneficiary_outcome(eng, PolicyLevers.baseline(),
-                             RebateModel(rebate_share=0.50)).rebate_total
-    hi = beneficiary_outcome(eng, PolicyLevers.baseline(),
-                             RebateModel(rebate_share=0.70)).rebate_total
-    assert hi > lo
-    assert abs(hi / lo - 0.70 / 0.50) < 1e-6      # linear in rebate_share
+      # linear in rebate_share
 
 
 def test_benchmark_cap_cuts_beneficiary_value():

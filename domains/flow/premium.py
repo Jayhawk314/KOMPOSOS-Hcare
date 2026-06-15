@@ -51,13 +51,13 @@ from typing import Dict, List, Optional, Sequence
 from domains.flow.scenario import (
     Market, PolicyLevers, BehavioralModel, ScenarioEngine, ScenarioResult,
 )
+from domains.flow.market import MarketModel, PatientModel
 
 
 @dataclass(frozen=True)
 class RebateModel:
     """Exposed accounting parameters mapping the equilibrium to beneficiary value."""
 
-    rebate_share: float = 0.65       # star-rating rebate percentage
     bid_to_ffs: float = 0.83         # standardized bid as a share of FFS cost
     premium_share: float = 0.30      # rebate share to premium/cost-sharing buydown
 
@@ -76,22 +76,49 @@ class BeneficiaryOutcome:
 def beneficiary_outcome(engine: ScenarioEngine, levers: PolicyLevers,
                         rebate: Optional[RebateModel] = None,
                         audit_by_geo: Optional[Dict[str, float]] = None,
+                        market_model: Optional[MarketModel] = None,
+                        patient_model: Optional[PatientModel] = None,
                         ) -> BeneficiaryOutcome:
     """Rebate-funded beneficiary value under a scenario (recomputes er exactly as
     ``ScenarioEngine.run`` does, so it is consistent with the reported money)."""
     rb = rebate or RebateModel()
+    mm = market_model or MarketModel(baseline_pass_through=0.65) # Fallback to 0.65 for backward compat
+    ptm = patient_model or PatientModel()
+    
     total_rebate = 0.0
     total_enr = 0
     for m in engine.markets:
+        # Get base rebate for enrollment elasticity
+        base_levers = PolicyLevers.baseline()
+        base_p = engine.model.upcoding(m, base_levers)
+        base_er = 1.0 + engine.model.kappa * base_p
+        base_bm = m.benchmark_per_capita
+        base_bid = rb.bid_to_ffs * m.ffs_per_capita
+        base_margin = max(0.0, base_bm * base_er - base_bid)
+        base_rebate = mm.effective_pass_through * base_margin
+        
         au = audit_by_geo.get(m.geo) if audit_by_geo else None
-        er = engine.model.risk_score(m, levers, au)
+        
+        # Note: In Phase H, we expect engine.markets to already have the
+        # updated enrollment if run_chain was used. If this is called directly
+        # on the base ScenarioEngine, we calculate p* using the bidirectional solver.
+        p_star = engine.model.upcoding(m, levers, au, ptm, mm, base_rebate, m.ffs_per_capita)
+        er = 1.0 + engine.model.kappa * p_star
+        
         bm = m.benchmark_per_capita
         if levers.benchmark_cap is not None:
             bm = min(bm, levers.benchmark_cap * m.ffs_per_capita)
         bid = rb.bid_to_ffs * m.ffs_per_capita
-        rebate_pc = rb.rebate_share * max(0.0, bm - bid)        # standardized
-        total_rebate += rebate_pc * er * m.enrollment           # risk-adjusted $
-        total_enr += m.enrollment
+        
+        margin_pc = max(0.0, bm * er - bid)
+        rebate_pc = mm.effective_pass_through * margin_pc        # standardized
+        
+        # Adjust enrollment
+        enr = ptm.calculate_enrollment(m.enrollment, base_rebate, rebate_pc, m.ffs_per_capita)
+        
+        total_rebate += rebate_pc * enr           # risk-adjusted $
+        total_enr += enr
+        
     enr = total_enr or 1
     premium = total_rebate * rb.premium_share
     return BeneficiaryOutcome(
@@ -106,24 +133,36 @@ def beneficiary_outcome(engine: ScenarioEngine, levers: PolicyLevers,
 # ---------------------------------------------------------------------------
 def compare_tradeoff(engine: ScenarioEngine, scenarios: Sequence[PolicyLevers],
                      *, baseline: Optional[PolicyLevers] = None,
-                     rebate: Optional[RebateModel] = None) -> str:
+                     rebate: Optional[RebateModel] = None,
+                     market_model: Optional[MarketModel] = None,
+                     patient_model: Optional[PatientModel] = None) -> str:
     """For each scenario: federal overpayment Δ (taxpayer) vs rebate value Δ
     (beneficiary). The point is that the two move TOGETHER -- a cut is not free.
     """
     base = baseline or PolicyLevers.baseline()
     rb = rebate or RebateModel()
-    base_res = engine.run(base)
-    base_ben = beneficiary_outcome(engine, base, rb)
+    
+    # We use run_chain to get the proper feedback if patient/market models are provided
+    from domains.flow.chain import run_chain
+    base_res = run_chain(engine, base, market_model=market_model, patient_model=patient_model).result
+    base_ben = beneficiary_outcome(engine, base, rb, market_model=market_model, patient_model=patient_model)
 
     rows = [("scenario", "overpayment", "fed chg", "rebate value",
-             "benef chg", "benef/enr")]
+             "benef chg", "benef/enr", "enrollment")]
     for lev in scenarios:
-        res = engine.run(lev)
-        ben = beneficiary_outcome(engine, lev, rb)
+        res = run_chain(engine, lev, market_model=market_model, patient_model=patient_model).result
+        ben = beneficiary_outcome(engine, lev, rb, market_model=market_model, patient_model=patient_model)
+        
         d_fed = res.overpayment - base_res.overpayment       # <0 = taxpayer saves
         d_ben = ben.rebate_total - base_ben.rebate_total     # <0 = enrollees lose
         d_ben_pe = ben.rebate_per_enrollee - base_ben.rebate_per_enrollee
         is_base = lev.label == base.label
+        
+        enr_display = f"{ben.enrollment:,}"
+        if not is_base and ben.enrollment != base_ben.enrollment:
+            d_enr = ben.enrollment - base_ben.enrollment
+            enr_display += f" ({d_enr:+,})"
+            
         rows.append((
             lev.label,
             f"${res.overpayment/1e9:,.1f}B",
@@ -131,15 +170,16 @@ def compare_tradeoff(engine: ScenarioEngine, scenarios: Sequence[PolicyLevers],
             f"${ben.rebate_total/1e9:,.1f}B",
             "--" if is_base else f"{d_ben/1e9:+,.1f}B",
             "--" if is_base else f"${d_ben_pe:+,.0f}",
+            enr_display
         ))
     w = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
     lines = ["Reform tradeoff -- taxpayer saving vs beneficiary cost "
-             "(rebate proxy, not a forecast)", "=" * 78]
+             "(rebate proxy, not a forecast)", "=" * (sum(w) + len(w) * 2)]
     for i, row in enumerate(rows):
         lines.append("  " + "  ".join(c.ljust(w[j]) for j, c in enumerate(row)))
         if i == 0:
             lines.append("  " + "  ".join("-" * w[j] for j in range(len(w))))
-    lines.append("-" * 78)
+    lines.append("-" * (sum(w) + len(w) * 2))
     lines.append(
         "  fed chg < 0 = taxpayer saves; benef chg < 0 = enrollees lose "
         "rebate-funded\n  benefits ($0 premiums, supplemental dental/vision, "

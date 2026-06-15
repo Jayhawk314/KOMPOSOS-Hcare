@@ -929,6 +929,11 @@ def main(argv=None) -> int:
                         "(Nash best response to the levers), calibrated to the "
                         "forensic baseline, then policy-lever comparison. Real "
                         "with --ma-geovar [--ma-ratebook --ma-crosswalk], else synthetic")
+    p.add_argument("--patient-elasticity", type=float, default=0.0,
+                   help="Phase H: Enrollment change % per 1% change in rebate ratio. "
+                        "Default 0.0 (inelastic). Set >0 to enable bidirectional feedback.")
+    p.add_argument("--market-competition", type=float, default=1.0,
+                   help="Phase H: Multiplier on margin pass-through rate. Default 1.0.")
     p.add_argument("--propagate", action="store_true",
                    help="PHASE C: a national audit budget propagated to per-state "
                         "deterrence via right Kan extension; compares uniform vs "
@@ -1058,6 +1063,10 @@ def main(argv=None) -> int:
         return run_real(args)
     p.print_help()
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
 
 
 if __name__ == "__main__":

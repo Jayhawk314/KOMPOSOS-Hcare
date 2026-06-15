@@ -52,6 +52,7 @@ from typing import List, Optional, Sequence
 from domains.flow.scenario import (
     Market, PolicyLevers, BehavioralModel, ScenarioEngine, ScenarioResult,
 )
+from domains.flow.market import MarketModel, PatientModel
 
 
 @dataclass(frozen=True)
@@ -101,28 +102,60 @@ class ChainResult:
 
 def run_chain(engine: ScenarioEngine, levers: PolicyLevers, *,
               site_neutral: float = 0.0, rebase_benchmark: bool = False,
-              provider: Optional[ProviderModel] = None) -> ChainResult:
-    """Backward-induction equilibrium of the CMS->provider->plan chain.
+              provider: Optional[ProviderModel] = None,
+              market_model: Optional[MarketModel] = None,
+              patient_model: Optional[PatientModel] = None) -> ChainResult:
+    """Backward-induction equilibrium of the CMS->provider->plan->market->patient chain.
 
     ``rebase_benchmark=False`` (short run): benchmarks fixed for the year ->
     site-neutral raises headroom -> plan codes harder. ``True`` (long run):
     benchmarks re-based on the lower FFS -> headroom preserved -> federal saving.
     """
     pm = provider or ProviderModel()
+    mm = market_model or MarketModel()
+    ptm = patient_model or PatientModel()
+    
     new_markets: List[Market] = []
     tot_e = sum(m.enrollment for m in engine.markets) or 1
     fsum = 0.0
+    
     for m in engine.markets:
         ffs_eff = _effective_ffs(m.ffs_per_capita, site_neutral, pm)
         factor = ffs_eff / m.ffs_per_capita if m.ffs_per_capita else 1.0
         bm = m.benchmark_per_capita * factor if rebase_benchmark \
             else m.benchmark_per_capita
+            
+        # Baseline rebate calculation for enrollment elasticity
+        # Re-compute baseline coding at current state, to find base rebate
+        base_levers = PolicyLevers.baseline()
+        base_p = engine.model.upcoding(m, base_levers)
+        base_er = 1.0 + engine.model.kappa * base_p
+        base_bm = m.benchmark_per_capita
+        base_bid = 0.83 * m.ffs_per_capita
+        base_margin = max(0.0, base_bm * base_er - base_bid)
+        base_rebate = mm.effective_pass_through * base_margin
+
+        # Recalculate p* using bidirectional model
+        p_star = engine.model.upcoding(
+            replace(m, ffs_per_capita=ffs_eff, benchmark_per_capita=bm),
+            levers, None, ptm, mm, base_rebate, ffs_eff)
+            
+        # Recalculate enrollment based on the new equilibrium
+        new_er = 1.0 + engine.model.kappa * p_star
+        new_margin = max(0.0, bm * new_er - (0.83 * ffs_eff))
+        new_rebate = mm.effective_pass_through * new_margin
+        
+        new_enr = ptm.calculate_enrollment(m.enrollment, base_rebate, new_rebate, ffs_eff)
+        
         new_markets.append(replace(m, ffs_per_capita=ffs_eff,
-                                   benchmark_per_capita=bm))
-        fsum += factor * m.enrollment
-    # The plan re-optimizes on the new cost basis (its Phase-A best response).
+                                   benchmark_per_capita=bm,
+                                   enrollment=new_enr))
+        fsum += factor * new_enr
+
+    # The plan re-optimizes on the new cost basis AND volume response
     sub = ScenarioEngine(new_markets, engine.model)
     res = sub.run(levers)
+    
     return ChainResult(site_neutral=site_neutral, rebase_benchmark=rebase_benchmark,
                        result=res, hopd_share=provider_response(site_neutral, pm),
                        ffs_factor=fsum / tot_e)
