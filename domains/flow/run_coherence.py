@@ -462,6 +462,27 @@ def _scenario_engine_from_args(args):
     return ScenarioEngine(markets, model), target, src
 
 
+def run_backtest_cli(args) -> int:
+    """PHASE G: backtest & sensitivity -- is the behavioral response trustworthy?"""
+    from domains.flow.backtest import (
+        forensic_overpayment, bootstrap_calibration, state_holdout_cv,
+        sensitivity, directional_checks, summarize_backtest, DEFAULT_KAPPA,
+    )
+    from domains.flow.scenario import BehavioralModel
+    eng, target, src = _scenario_engine_from_args(args)
+    mkts = eng.markets
+    print(f"  markets: {src}; forensic target ${target/1e9:,.1f}B\n", flush=True)
+    stab = bootstrap_calibration(mkts)
+    oos = state_holdout_cv(mkts, folds=min(5, max(2, len(mkts) // 4)))
+    sens = [
+        sensitivity(mkts, target, param="elasticity", values=[0.5, 1.0, 2.0, 4.0]),
+        sensitivity(mkts, target, param="kappa", values=[0.20, 0.25, 0.30, 0.40]),
+    ]
+    checks = directional_checks(eng)
+    print(summarize_backtest(stab, oos, sens, checks))
+    return 0
+
+
 def run_chain_cli(args) -> int:
     """PHASE E: the CMS -> provider -> plan chain (site-neutral payment)."""
     from domains.flow.chain import compare_site_neutral
@@ -923,6 +944,11 @@ def main(argv=None) -> int:
                    help="PHASE E: the activity-theory actor/lever map -- who "
                         "optimizes what, who pulls which lever, and the "
                         "contradictions the levers target (the scenario frame)")
+    p.add_argument("--backtest", action="store_true",
+                   help="PHASE G: backtest & sensitivity -- bootstrap calibration "
+                        "stability, state hold-out cross-validation, parameter "
+                        "sensitivity (ranking stability), and published-anchor "
+                        "directional checks. Real with --ma-geovar [...], else synthetic")
     p.add_argument("--hospital", nargs="?", const="", metavar="CSV",
                    help="hospital price coherence ('same DRG, different price'); "
                         "optional Medicare Inpatient PUF CSV, else synthetic")
@@ -987,6 +1013,8 @@ def main(argv=None) -> int:
         return run_daily(args)
     if args.ledger:
         return run_ledger(args)
+    if args.backtest:
+        return run_backtest_cli(args)
     if args.chain:
         return run_chain_cli(args)
     if args.actors:
