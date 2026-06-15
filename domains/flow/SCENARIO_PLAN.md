@@ -208,9 +208,28 @@ truth.
     rebate *is* benchmark-linked. The engine shows the tradeoff; it does not claim
     a free lunch. 6 new tests; suite **127 passed**.
   - ASCII-only console output (the repo's encoding lesson — no `Δ`/Unicode).
-- **Phase E — Multi-actor open games + activity map.** Compose CMS→plan→provider
-  as an open game (`open_games.py`); activity-theory actor/lever map as the
-  framing/UX. Counterfactuals across the chain.
+- **Phase E — Multi-actor open games + activity map. ✅ DONE (2026-06-14).**
+  Two modules.
+  - `domains/flow/chain.py`: the **CMS→provider→plan chain** solved by backward
+    induction, with a provider-side **site-neutral payment** lever. The provider
+    best-responds (HOPD share `phi*(site_neutral)`) → sets the FFS cost basis →
+    the plan re-optimizes coding (Phase A) on the new headroom. `chain_open_game`
+    mirrors one market through the generic `OpenGame` composition and a test
+    confirms it reproduces the hand-rolled induction exactly (the categorical
+    composition is faithful). Baseline (`site_neutral=0`) is identity ($107.3B).
+  - **The non-obvious chain result (real data):** with benchmarks **fixed**,
+    site-neutral 100% *raises* overpayment $107.3B→$120.4B (lower cost basis →
+    bigger headroom → plans code harder, mean risk 1.200→1.211) — a provider
+    "efficiency" reform captured by plans, not taxpayers. With benchmarks
+    **rebased** on the lower FFS, the same reform *lowers* it to $105.1B (federal
+    paid −$11B). Direction flips on the regime — invisible to any single-actor
+    model. Honest data limit stated (no place-of-service data; provider layer
+    modeled, calibrated to identity).
+  - `domains/flow/actors.py`: the **activity-theory actor/lever map** (Engestrom
+    6-component system + `ContradictionDetector`) — who optimizes what, who pulls
+    which lever, and the contradictions the levers target, with the plan↔program
+    gap grounded in the measured overpayment ratio. Framing, not a calculator
+    (as scoped). CLI: `--chain`, `--actors`. 12 new tests; suite **139 passed**.
 - **Phase F — (stretch) outcome linkage.** Only if external outcome data is
   brought in; explicitly gated, not promised.
 

@@ -425,6 +425,68 @@ def run_propagate(args) -> int:
     return 0
 
 
+def _scenario_engine_from_args(args):
+    """Build a calibrated ScenarioEngine from the data flags (shared by the
+    scenario / propagate / chain entrypoints). Real if --ma-geovar, else synthetic."""
+    from domains.flow.medicare_advantage import (
+        MedicareAdvantageTwoCell, assemble_contracts_from_geovar,
+    )
+    from domains.flow.scenario import (
+        markets_from_contracts, synthetic_markets, BehavioralModel, ScenarioEngine,
+    )
+    if args.ma_geovar:
+        from domains.flow.ingest import (
+            load_ffs_geovar, load_ma_ratebook, load_ssa_fips_crosswalk,
+            load_county_ma_enrollment,
+        )
+        geo = load_ffs_geovar(args.ma_geovar, year=args.ma_year, geo_level="State")
+        overrides: dict = {}
+        if args.ma_ratebook:
+            weights = None
+            if args.ma_crosswalk:
+                xw = load_ssa_fips_crosswalk(args.ma_crosswalk)
+                enr = load_county_ma_enrollment(args.ma_geovar, year=args.ma_year)
+                weights = {s: enr.get(f, 0) for s, f in xw.items()}
+            for s, bm in load_ma_ratebook(args.ma_ratebook, bonus=args.ma_bonus,
+                                          weights=weights).items():
+                overrides.setdefault(s, {})["benchmark_per_capita"] = bm
+        markets = markets_from_contracts(
+            assemble_contracts_from_geovar(geo, overrides=overrides))
+        src = f"REAL ({len(markets)} states)"
+    else:
+        markets = synthetic_markets()
+        src = "synthetic markets (use --ma-geovar [...] for real data)"
+    target = sum(r.overpayment for r in MedicareAdvantageTwoCell().evaluate_all(
+        [m_to_contract(m) for m in markets]))
+    model = BehavioralModel.calibrate(markets, target_overpayment=target)
+    return ScenarioEngine(markets, model), target, src
+
+
+def run_chain_cli(args) -> int:
+    """PHASE E: the CMS -> provider -> plan chain (site-neutral payment)."""
+    from domains.flow.chain import compare_site_neutral
+    eng, target, src = _scenario_engine_from_args(args)
+    print(f"  markets: {src}; baseline calibrated to ${target/1e9:,.1f}B\n",
+          flush=True)
+    print(compare_site_neutral(eng))
+    print("\nProvider layer is MODELED (no place-of-service data in the MA money "
+          "graph),\ncalibrated to identity at baseline -- only directional, "
+          "relative effects are claimed.")
+    return 0
+
+
+def run_actors_cli(args) -> int:
+    """PHASE E: the activity-theory actor / lever map (the scenario frame)."""
+    from domains.flow.actors import build_actor_map, summarize_actor_map
+    from domains.flow.scenario import PolicyLevers
+    eng, target, src = _scenario_engine_from_args(args)
+    base = eng.run(PolicyLevers.baseline())
+    ratio = base.pct_above_ffs / (1.0 + base.pct_above_ffs)   # overpay / paid
+    print(f"  markets: {src}; grounding overpayment ratio {ratio:.0%}\n", flush=True)
+    print(summarize_actor_map(build_actor_map(ratio)))
+    return 0
+
+
 def m_to_contract(m):
     """A scenario Market at the fixed MedPAC risk -- the forensic comparison point."""
     from domains.flow.medicare_advantage import MAContract, MEDPAC_MA_CODING_RISK
@@ -852,6 +914,15 @@ def main(argv=None) -> int:
                         "budget. Real with --ma-geovar [...], else synthetic")
     p.add_argument("--audit-budget", dest="audit_budget", type=float, default=2.0,
                    help="national audit budget multiplier for --propagate (default 2.0)")
+    p.add_argument("--chain", action="store_true",
+                   help="PHASE E: the CMS->provider->plan chain as a composed open "
+                        "game; a provider-side site-neutral lever re-optimized "
+                        "through the plan, fixed vs rebased benchmark regimes. "
+                        "Real with --ma-geovar [...], else synthetic")
+    p.add_argument("--actors", action="store_true",
+                   help="PHASE E: the activity-theory actor/lever map -- who "
+                        "optimizes what, who pulls which lever, and the "
+                        "contradictions the levers target (the scenario frame)")
     p.add_argument("--hospital", nargs="?", const="", metavar="CSV",
                    help="hospital price coherence ('same DRG, different price'); "
                         "optional Medicare Inpatient PUF CSV, else synthetic")
@@ -916,6 +987,10 @@ def main(argv=None) -> int:
         return run_daily(args)
     if args.ledger:
         return run_ledger(args)
+    if args.chain:
+        return run_chain_cli(args)
+    if args.actors:
+        return run_actors_cli(args)
     if args.propagate:
         return run_propagate(args)
     if args.scenario:
