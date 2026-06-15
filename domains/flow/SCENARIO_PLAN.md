@@ -191,9 +191,23 @@ truth.
     budget) — that would have been the decorative-wrapper mistake; the cone is
     built explicitly. CLI: `--propagate [--audit-budget N]`. `ScenarioEngine.run`
     now takes an optional `audit_by_geo`. 7 new tests; suite **121 passed**.
-- **Phase D — Premium/rebate proxy + display.** The derived-outcome layer + a
-  comparison display (table now; dashboard later). Optionally a ledger
-  "scenario" view.
+- **Phase D — Premium/rebate proxy + display. ✅ DONE (2026-06-14).**
+  `domains/flow/premium.py`: a transparent ACCOUNTING proxy (not game theory,
+  clearly labeled) mapping the equilibrium to MA rebate-funded beneficiary value.
+  `rebate_pc = rebate_share·max(0, benchmark − bid)`, `bid = bid_to_ffs·ffs`,
+  risk-adjusted (`×er`). Exposed params: `rebate_share=0.65`, `bid_to_ffs=0.83`,
+  `premium_share=0.30`. `compare_tradeoff` shows **federal saving AND beneficiary
+  cost side by side**; wired into `--scenario`.
+  - **Baseline proxy sanity:** $93.5B / $2,834-per-enrollee vs real ~$60–70B /
+    ~$2,000 (same order; labeled, not a gate).
+  - **The load-bearing insight it surfaces (real data, vs baseline):** the
+    **coding-adjustment lever is efficient** — coding adj 20% cuts federal
+    overpayment −$81.5B but beneficiary rebate only −$0.6B (it haircuts risk
+    *payment*, not the benchmark−bid rebate pool); a **benchmark cap is blunt** —
+    −$133.8B federal but −$48.7B (−$1,475/enrollee) in lost benefits, because the
+    rebate *is* benchmark-linked. The engine shows the tradeoff; it does not claim
+    a free lunch. 6 new tests; suite **127 passed**.
+  - ASCII-only console output (the repo's encoding lesson — no `Δ`/Unicode).
 - **Phase E — Multi-actor open games + activity map.** Compose CMS→plan→provider
   as an open game (`open_games.py`); activity-theory actor/lever map as the
   framing/UX. Counterfactuals across the chain.

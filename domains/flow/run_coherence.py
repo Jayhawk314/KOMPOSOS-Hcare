@@ -357,10 +357,17 @@ def run_scenario(args) -> int:
               "the model is mis-calibrated.\n")
 
     print(compare(engine, v1_scenarios()))
-    print("\nHonest boundary: dollars + incentives are the credible output; "
-          "premiums are a\nstated proxy (not yet computed); patient health is "
-          "out of scope (no outcome data\nin the money graph). This is a "
-          "what-if calculator, calibrated at baseline -- a\nmodel, not a forecast.")
+
+    # Phase D: the beneficiary side -- the rebate/premium proxy + the tradeoff.
+    from domains.flow.premium import compare_tradeoff, summarize_baseline_rebate
+    print("\n" + summarize_baseline_rebate(engine))
+    print("\n" + compare_tradeoff(engine, v1_scenarios()))
+
+    print("\nHonest boundary: dollars + incentives are the credible output; the "
+          "rebate/premium\nbeneficiary side is a STATED proxy (transparent "
+          "accounting, parameters exposed);\npatient health is out of scope (no "
+          "outcome data in the money graph). This is a\nwhat-if calculator, "
+          "calibrated at baseline -- a model, not a forecast.")
     return 0
 
 
