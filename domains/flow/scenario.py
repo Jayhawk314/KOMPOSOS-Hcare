@@ -128,16 +128,24 @@ class BehavioralModel:
     elasticity: float = 1.0
     kappa: float = DEFAULT_KAPPA
 
-    def upcoding(self, market: Market, levers: PolicyLevers) -> float:
-        """Equilibrium upcoding propensity p* in [0, 1) for this market+levers."""
+    def upcoding(self, market: Market, levers: PolicyLevers,
+                 audit_override: Optional[float] = None) -> float:
+        """Equilibrium upcoding propensity p* in [0, 1) for this market+levers.
+
+        ``audit_override`` replaces the uniform national ``audit_multiplier`` with
+        a per-market value -- this is the hook the Phase C Kan propagation uses to
+        push a national audit budget down to state-specific deterrence.
+        """
         h = self._effective_headroom(market, levers)
         g = self.elasticity * h * (1.0 - levers.coding_adjustment)
-        d = self.base_deter * levers.deterrence_factor()
+        audit = levers.audit_multiplier if audit_override is None else audit_override
+        d = self.base_deter * max(0.0, audit) * max(0.0, levers.penalty_multiplier)
         return g / (g + d + 1e-12)
 
-    def risk_score(self, market: Market, levers: PolicyLevers) -> float:
+    def risk_score(self, market: Market, levers: PolicyLevers,
+                   audit_override: Optional[float] = None) -> float:
         """Endogenous MA risk score er = 1 + kappa * p* (the former fixed 1.20)."""
-        return 1.0 + self.kappa * self.upcoding(market, levers)
+        return 1.0 + self.kappa * self.upcoding(market, levers, audit_override)
 
     def _effective_headroom(self, market: Market, levers: PolicyLevers) -> float:
         h = market.headroom
@@ -222,10 +230,18 @@ class ScenarioEngine:
         self.markets = list(markets)
         self.model = model
 
-    def run(self, levers: PolicyLevers) -> ScenarioResult:
+    def run(self, levers: PolicyLevers,
+            audit_by_geo: Optional[Dict[str, float]] = None) -> ScenarioResult:
+        """Equilibrium outcome under ``levers``.
+
+        ``audit_by_geo`` (from :mod:`domains.flow.propagation`) supplies a
+        per-state audit multiplier -- a national audit budget allocated down to
+        states. When ``None`` the uniform national ``audit_multiplier`` is used.
+        """
         contracts: List[MAContract] = []
         for m in self.markets:
-            er = self.model.risk_score(m, levers)            # ENDOGENOUS now
+            au = audit_by_geo.get(m.geo) if audit_by_geo else None
+            er = self.model.risk_score(m, levers, au)        # ENDOGENOUS now
             bm = m.benchmark_per_capita
             if levers.benchmark_cap is not None:
                 bm = min(bm, levers.benchmark_cap * m.ffs_per_capita)
@@ -241,8 +257,10 @@ class ScenarioEngine:
         consumed = sum(r.consumed for r in results)
         over = sum(r.overpayment for r in results)
         enr = sum(m.enrollment for m in self.markets) or 1
-        mean_risk = sum(self.model.risk_score(m, levers) * m.enrollment
-                        for m in self.markets) / enr
+        mean_risk = sum(
+            self.model.risk_score(m, levers,
+                                  audit_by_geo.get(m.geo) if audit_by_geo else None)
+            * m.enrollment for m in self.markets) / enr
         return ScenarioResult(
             label=levers.label, levers=levers, paid=paid, consumed=consumed,
             overpayment=over, mean_risk=mean_risk, per_geo=results)

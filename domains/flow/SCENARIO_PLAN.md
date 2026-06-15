@@ -170,8 +170,27 @@ truth.
 - **Phase B — Levers + comparison.** Implement the lever set; a
   `compare(scenarios)` that returns the side-by-side table (national overpayment,
   Δ vs baseline, per-enrollee, equilibrium coding). CLI `--scenario`.
-- **Phase C — Kan propagation.** National lever → per-state/county via right Kan
-  (`kan_extensions.py`), so budget/benchmark constraints allocate consistently.
+- **Phase C — Kan propagation. ✅ DONE (2026-06-14).** `domains/flow/propagation.py`:
+  a `NationalLever` (one national audit budget + an allocation `policy`) is pushed
+  to per-state audit multipliers by a **right Kan extension** — the per-state
+  allocation is the cone over the national aggregate, conserving the budget
+  exactly (`Σ_s E_s·mult_s = budget·Σ_s E_s`). That conservation law is the
+  load-bearing categorical content; the `TARGETED` policy returns the **terminal
+  (overpayment-minimizing) cone** via marginal-equalizing water-filling.
+  - **Proof it's not decorative (real 2024 data, same 2× budget, 3 allocations):**
+    uniform $91.4B · **targeted (optimal) $87.6B (−$3.8B for the same
+    auditor-hours)** · equal-per-state $100.9B (+$9.5B) — a ~$13B spread that the
+    budget scalar alone cannot express and uniform Phase-A deterrence structurally
+    could not produce.
+  - **Non-obvious finding:** the optimum does *not* pile audits on the
+    worst-offender state — diminishing returns (`p*=g/(g+d)` convex) make that
+    wasteful; it equalizes *marginal* returns, spreading effort. Refutes "audit
+    the worst hardest."
+  - We deliberately did **not** route through the generic `RightKanExtension`
+    class (its numeric limit is a conservative *minimum*, wrong for a conserved
+    budget) — that would have been the decorative-wrapper mistake; the cone is
+    built explicitly. CLI: `--propagate [--audit-budget N]`. `ScenarioEngine.run`
+    now takes an optional `audit_by_geo`. 7 new tests; suite **121 passed**.
 - **Phase D — Premium/rebate proxy + display.** The derived-outcome layer + a
   comparison display (table now; dashboard later). Optionally a ledger
   "scenario" view.

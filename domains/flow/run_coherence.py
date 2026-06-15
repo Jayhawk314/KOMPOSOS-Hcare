@@ -364,6 +364,60 @@ def run_scenario(args) -> int:
     return 0
 
 
+def run_propagate(args) -> int:
+    """PHASE C: a national audit budget propagated to states via right Kan.
+
+    Calibrates as in --scenario, then holds one national audit budget fixed and
+    allocates it three ways (uniform / targeted-optimal / equal-per-state),
+    showing that the allocation cone -- not just the budget -- moves the outcome.
+    """
+    from domains.flow.medicare_advantage import (
+        MedicareAdvantageTwoCell, assemble_contracts_from_geovar,
+    )
+    from domains.flow.scenario import (
+        markets_from_contracts, synthetic_markets, BehavioralModel, ScenarioEngine,
+    )
+    from domains.flow.propagation import compare_allocations
+
+    if args.ma_geovar:
+        from domains.flow.ingest import (
+            load_ffs_geovar, load_ma_ratebook, load_ssa_fips_crosswalk,
+            load_county_ma_enrollment,
+        )
+        print("loading real markets (FFS GeoVar + MA ratebook)...", flush=True)
+        geo = load_ffs_geovar(args.ma_geovar, year=args.ma_year, geo_level="State")
+        overrides: dict = {}
+        if args.ma_ratebook:
+            weights = None
+            if args.ma_crosswalk:
+                xw = load_ssa_fips_crosswalk(args.ma_crosswalk)
+                enr = load_county_ma_enrollment(args.ma_geovar, year=args.ma_year)
+                weights = {s: enr.get(f, 0) for s, f in xw.items()}
+            for s, bm in load_ma_ratebook(args.ma_ratebook, bonus=args.ma_bonus,
+                                          weights=weights).items():
+                overrides.setdefault(s, {})["benchmark_per_capita"] = bm
+        markets = markets_from_contracts(
+            assemble_contracts_from_geovar(geo, overrides=overrides))
+        src = f"REAL ({len(markets)} states)"
+    else:
+        markets = synthetic_markets()
+        src = "synthetic markets (use --ma-geovar [...] for real data)"
+
+    target = sum(r.overpayment for r in MedicareAdvantageTwoCell().evaluate_all(
+        [m_to_contract(m) for m in markets]))
+    model = BehavioralModel.calibrate(markets, target_overpayment=target)
+    engine = ScenarioEngine(markets, model)
+    budget = args.audit_budget
+    print(f"  markets: {src}; baseline calibrated to ${target/1e9:,.1f}B\n",
+          flush=True)
+    print(compare_allocations(engine, budget=budget))
+    print("\nThe national knob is ONE number (the audit budget); the right Kan "
+          "extension\nallocates it to states under the conservation constraint. "
+          "Targeting the\nmarginal leak beats uniform for the same auditor-hours "
+          "-- a model result,\nnot a forecast.")
+    return 0
+
+
 def m_to_contract(m):
     """A scenario Market at the fixed MedPAC risk -- the forensic comparison point."""
     from domains.flow.medicare_advantage import MAContract, MEDPAC_MA_CODING_RISK
@@ -784,6 +838,13 @@ def main(argv=None) -> int:
                         "(Nash best response to the levers), calibrated to the "
                         "forensic baseline, then policy-lever comparison. Real "
                         "with --ma-geovar [--ma-ratebook --ma-crosswalk], else synthetic")
+    p.add_argument("--propagate", action="store_true",
+                   help="PHASE C: a national audit budget propagated to per-state "
+                        "deterrence via right Kan extension; compares uniform vs "
+                        "targeted-optimal vs equal-per-state allocation of the SAME "
+                        "budget. Real with --ma-geovar [...], else synthetic")
+    p.add_argument("--audit-budget", dest="audit_budget", type=float, default=2.0,
+                   help="national audit budget multiplier for --propagate (default 2.0)")
     p.add_argument("--hospital", nargs="?", const="", metavar="CSV",
                    help="hospital price coherence ('same DRG, different price'); "
                         "optional Medicare Inpatient PUF CSV, else synthetic")
@@ -848,6 +909,8 @@ def main(argv=None) -> int:
         return run_daily(args)
     if args.ledger:
         return run_ledger(args)
+    if args.propagate:
+        return run_propagate(args)
     if args.scenario:
         return run_scenario(args)
     if args.ma_geovar:
