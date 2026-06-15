@@ -27,9 +27,10 @@ truth; it shows the conclusions are internally robust and directionally sound.
 
 from __future__ import annotations
 
+import itertools
 import random
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 from domains.flow.medicare_advantage import (
     MedicareAdvantageTwoCell, MAContract, MEDPAC_MA_CODING_RISK,
@@ -38,6 +39,23 @@ from domains.flow.scenario import (
     Market, PolicyLevers, BehavioralModel, ScenarioEngine, v1_scenarios,
     DEFAULT_KAPPA,
 )
+
+# kappa (the coding ceiling: risk -> 1+kappa for an all-out gamer) is NOT
+# identified from the public aggregate -- the baseline mean is pinned by
+# calibration regardless of kappa, and per-contract coding is restricted data.
+# We therefore PIN it to the literature rather than fit it: MedPAC documents
+# coding raising MA risk scores ~16-20% on average (gross, before the 5.9%
+# statutory cut), with the most aggressive contracts materially higher. The
+# ceiling must sit STRICTLY above the calibrated mean coding (~0.20) -- at
+# kappa=0.20 every plan is already maxed (base_deter -> 0, audit cannot bite),
+# a degenerate boundary, not a real regime. The defensible band is therefore
+# [0.25, 0.35] around the 0.30 anchor; conclusions are reported across it
+# (uncertainty_bands), not as a false point estimate. The band itself reveals
+# that AUDIT-lever efficacy is the most kappa-sensitive conclusion (how much
+# headroom exists between current coding and the ceiling).
+KAPPA_RANGE: Tuple[float, float] = (0.25, 0.35)
+KAPPA_GRID: Tuple[float, ...] = (0.25, 0.30, 0.35)
+ELASTICITY_GRID: Tuple[float, ...] = (0.5, 1.0, 2.0)
 
 
 def forensic_overpayment(markets: Sequence[Market]) -> float:
@@ -140,7 +158,9 @@ class SensitivityReport:
     values: List[float]
     rankings: List[List[str]]        # scenario order (best->worst) per value
     headline_deltas: List[float]     # the headline scenario's delta per value
-    ranking_stable: bool
+    ranking_stable: bool             # exact-order preserved across the sweep
+    rank_agreement: float            # fraction of pairwise orderings preserved
+    swaps: List[Tuple[str, str]]     # adjacent pairs that swap (the instability)
 
 
 def _ranking(engine: ScenarioEngine,
@@ -151,13 +171,36 @@ def _ranking(engine: ScenarioEngine,
     return [name for name, _ in scored]
 
 
+def _rank_agreement(rankings: Sequence[List[str]]) -> Tuple[float, List[Tuple[str, str]]]:
+    """Fraction of pairwise orderings preserved vs the central ranking (a graded
+    Kendall-tau-style measure -- a near-tie swap of two adjacent scenarios scores
+    near 1.0, not 0), plus the specific pairs that ever swap."""
+    ref = rankings[0]
+    pairs = list(itertools.combinations(ref, 2))
+    pos_ref = {n: i for i, n in enumerate(ref)}
+    worst = 1.0
+    swaps: set = set()
+    for r in rankings[1:]:
+        pos = {n: i for i, n in enumerate(r)}
+        concord = 0
+        for a, b in pairs:
+            same = (pos_ref[a] < pos_ref[b]) == (pos[a] < pos[b])
+            if same:
+                concord += 1
+            else:
+                swaps.add(tuple(sorted((a, b))))
+        worst = min(worst, concord / len(pairs))
+    return worst, sorted(swaps)
+
+
 def sensitivity(markets: Sequence[Market], target: float, *,
                 param: str, values: Sequence[float],
                 scenarios: Optional[Sequence[PolicyLevers]] = None,
                 headline: str = "coding adj 20%") -> SensitivityReport:
     """Vary one exposed parameter; recalibrate base_deter each time so the gate
-    holds; report the headline scenario's delta range and whether the full
-    scenario ranking is preserved across the sweep."""
+    holds; report the headline scenario's delta range, exact-ranking stability,
+    and the GRADED rank agreement (so a near-tie at the top is not mislabeled a
+    catastrophic flip)."""
     scenarios = list(scenarios or v1_scenarios())
     rankings: List[List[str]] = []
     deltas: List[float] = []
@@ -171,9 +214,69 @@ def sensitivity(markets: Sequence[Market], target: float, *,
         base = eng.run(PolicyLevers.baseline()).overpayment
         hl = next((lev for lev in scenarios if lev.label == headline), None)
         deltas.append((eng.run(hl).overpayment - base) if hl else 0.0)
-    stable = all(r == rankings[0] for r in rankings)
-    return SensitivityReport(param=param, values=list(values), rankings=rankings,
-                             headline_deltas=deltas, ranking_stable=stable)
+    agreement, swaps = _rank_agreement(rankings)
+    return SensitivityReport(
+        param=param, values=list(values), rankings=rankings,
+        headline_deltas=deltas, ranking_stable=all(r == rankings[0] for r in rankings),
+        rank_agreement=agreement, swaps=swaps)
+
+
+# ---------------------------------------------------------------------------
+# Uncertainty bands -- every scenario delta as a range over the parameter grid
+# ---------------------------------------------------------------------------
+@dataclass
+class ScenarioBand:
+    label: str
+    lo: float                        # min overpayment delta across the grid
+    mid: float                       # central (kappa=0.30, elasticity=1.0)
+    hi: float                        # max overpayment delta across the grid
+
+
+def uncertainty_bands(markets: Sequence[Market], target: float, *,
+                      scenarios: Optional[Sequence[PolicyLevers]] = None,
+                      kappa_values: Sequence[float] = KAPPA_GRID,
+                      elasticity_values: Sequence[float] = ELASTICITY_GRID
+                      ) -> List[ScenarioBand]:
+    """Each scenario's overpayment delta vs baseline, as a BAND over the
+    (kappa, elasticity) uncertainty grid -- recalibrating base_deter at every
+    grid point so the baseline gate always holds. This is the honest CBO-style
+    output: a range, not a point, so near-ties read as overlapping bands."""
+    scenarios = list(scenarios or v1_scenarios())
+    deltas = {lev.label: [] for lev in scenarios}
+    mids = {lev.label: 0.0 for lev in scenarios}
+    for k in kappa_values:
+        for e in elasticity_values:
+            model = BehavioralModel.calibrate(markets, target_overpayment=target,
+                                              kappa=k, elasticity=e)
+            eng = ScenarioEngine(markets, model)
+            base = eng.run(PolicyLevers.baseline()).overpayment
+            for lev in scenarios:
+                d = eng.run(lev).overpayment - base
+                deltas[lev.label].append(d)
+                if abs(k - DEFAULT_KAPPA) < 1e-9 and abs(e - 1.0) < 1e-9:
+                    mids[lev.label] = d
+    return [ScenarioBand(label=lev.label, lo=min(deltas[lev.label]),
+                         mid=mids[lev.label], hi=max(deltas[lev.label]))
+            for lev in scenarios]
+
+
+def summarize_bands(bands: Sequence[ScenarioBand]) -> str:
+    rows = [("scenario", "overpayment delta vs baseline (band over kappa x elasticity)")]
+    lines = ["Scenario uncertainty bands -- delta range over the parameter grid",
+             "=" * 74]
+    width = max(len(b.label) for b in bands)
+    for b in bands:
+        if b.label == "baseline":
+            continue
+        lines.append(f"  {b.label:<{width}}  "
+                     f"${b.lo/1e9:+6,.1f}B .. ${b.hi/1e9:+6,.1f}B  "
+                     f"(central ${b.mid/1e9:+,.1f}B)")
+    lines.append("-" * 74)
+    lines.append("  Bands span the MedPAC-anchored kappa [0.25-0.35] x elasticity "
+                 "grid, each point\n  recalibrated to the baseline gate. Overlapping "
+                 "bands = a near-tie, not a\n  robust ranking -- read the ranges, "
+                 "not the point estimates.")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -244,12 +347,15 @@ def summarize_backtest(stability: Optional[StabilityReport] = None,
                      f"mean {oos.mean_error:.2%}")
     if sens:
         lines.append("")
-        lines.append("  G3 sensitivity (recalibrated each sweep; ranking stability):")
+        lines.append("  G3 sensitivity (recalibrated each sweep; graded rank agreement):")
         for s in sens:
             lo, hi = min(s.headline_deltas), max(s.headline_deltas)
-            tag = "RANKING PRESERVED" if s.ranking_stable else "RANKING FLIPS"
+            tag = (f"{s.rank_agreement:.0%} of orderings hold"
+                   + ("" if s.ranking_stable else
+                      "; swaps: " + ", ".join(f"{a}~{b}" for a, b in s.swaps[:2])))
             lines.append(f"     {s.param:<10} in [{s.values[0]:g}..{s.values[-1]:g}] "
-                         f"-> headline delta ${lo/1e9:,.0f}B..${hi/1e9:,.0f}B  [{tag}]")
+                         f"-> headline delta ${lo/1e9:,.0f}B..${hi/1e9:,.0f}B")
+            lines.append(f"                  rank agreement: {tag}")
     if checks:
         lines.append("")
         lines.append("  G4 published-anchor directional checks:")

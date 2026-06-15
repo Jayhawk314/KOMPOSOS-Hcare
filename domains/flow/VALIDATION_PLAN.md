@@ -82,9 +82,27 @@ this surfaced real weaknesses, not fake passes:**
   test internal generalization, not truth; G3/G4 are the substantive checks.
 - 7 tests; suite **146 passed**. CLI `--backtest`.
 
-**Next quality step (from the findings):** pin `kappa` to MedPAC's coding bound
-and make `base_deter` calibration more robust (e.g. enrollment-weighted or
-multi-state regularized), then re-run G1–G3.
+**G-hardening ✅ DONE (2026-06-14), from the G3 finding:**
+- **`kappa` pinned to a literature anchor, not a free knob.** `KAPPA_RANGE =
+  [0.25, 0.35]` around the 0.30 ceiling, documented from MedPAC's coding-intensity
+  figures. Caught that `kappa = 0.20` is a *degenerate boundary* (ceiling = the
+  calibrated mean coding ⇒ every plan maxed ⇒ `base_deter → 0` ⇒ audit can't
+  bite), so the band sits strictly above it.
+- **Graded rank agreement replaces the binary "FLIPS".** The kappa sweep holds
+  **86%** of pairwise orderings; the only instability is a **near-tie among the
+  most aggressive reforms** (named in output), not a policy reversal.
+- **Uncertainty bands on every scenario** (`uncertainty_bands` / `--backtest`),
+  recalibrated at each (kappa × elasticity) grid point. The honest CBO-style
+  output. It reveals the real structure: **coding-adjustment and benchmark-cap
+  conclusions are robust** (tight bands, e.g. coding-adj 20% −$80B to −$83B),
+  while **audit/penalty efficacy is genuinely uncertain** (audit 5× spans −$22B
+  to −$48B, depending on headroom-to-ceiling). Benchmark-cap and combined-reform
+  bands overlap → the top "ranking" is a true near-tie, shown honestly.
+- 4 more tests; suite **149 passed**.
+
+**Still open (lower priority):** make `base_deter` calibration more robust to
+state subsampling (G1 CV ~26%) — but the main all-states calibration is
+deterministic and fine; the bootstrap CV is a diagnostic, not a bug. Defer.
 
 ### Original spec (for reference)
 

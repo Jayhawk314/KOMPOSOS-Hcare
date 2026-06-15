@@ -17,6 +17,7 @@ from domains.flow.scenario import (
 from domains.flow.backtest import (
     forensic_overpayment, bootstrap_calibration, state_holdout_cv,
     sensitivity, directional_checks, summarize_backtest, DEFAULT_KAPPA,
+    uncertainty_bands, summarize_bands, KAPPA_RANGE,
 )
 
 
@@ -57,9 +58,41 @@ def test_sensitivity_elasticity_ranking_is_robust():
 
 def test_sensitivity_reports_a_ranking_per_value():
     mkts, target = _markets_target()
-    rep = sensitivity(mkts, target, param="kappa", values=[0.20, 0.30, 0.40])
+    rep = sensitivity(mkts, target, param="kappa", values=[0.25, 0.30, 0.35])
     assert len(rep.rankings) == 3
     assert all(isinstance(r, list) and r for r in rep.rankings)
+
+
+def test_graded_rank_agreement_is_a_fraction():
+    """The graded metric must lie in [0,1] and equal 1.0 when the order is exact."""
+    mkts, target = _markets_target()
+    rep = sensitivity(mkts, target, param="kappa", values=[0.25, 0.30, 0.35])
+    assert 0.0 <= rep.rank_agreement <= 1.0
+    if rep.ranking_stable:
+        assert rep.rank_agreement == 1.0
+        assert rep.swaps == []
+    else:
+        assert rep.rank_agreement < 1.0
+        assert rep.swaps                       # the swapped pairs are reported
+
+
+def test_uncertainty_bands_bracket_the_central_estimate():
+    """Each scenario band must contain its own central (kappa=0.30, elasticity=1)
+    point estimate -- the band is an honest range around it."""
+    mkts, target = _markets_target()
+    bands = uncertainty_bands(mkts, target)
+    assert bands
+    for b in bands:
+        assert b.lo <= b.mid <= b.hi
+    text = summarize_bands(bands)
+    assert "uncertainty bands" in text.lower()
+    text.encode("cp1252")
+
+
+def test_kappa_range_is_above_the_degenerate_boundary():
+    """The pinned ceiling must sit strictly above the ~0.20 mean coding, or audit
+    levers degenerate (base_deter -> 0)."""
+    assert KAPPA_RANGE[0] > 0.20
 
 
 def test_directional_checks_all_agree():

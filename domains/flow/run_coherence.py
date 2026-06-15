@@ -466,9 +466,9 @@ def run_backtest_cli(args) -> int:
     """PHASE G: backtest & sensitivity -- is the behavioral response trustworthy?"""
     from domains.flow.backtest import (
         forensic_overpayment, bootstrap_calibration, state_holdout_cv,
-        sensitivity, directional_checks, summarize_backtest, DEFAULT_KAPPA,
+        sensitivity, directional_checks, summarize_backtest,
+        uncertainty_bands, summarize_bands,
     )
-    from domains.flow.scenario import BehavioralModel
     eng, target, src = _scenario_engine_from_args(args)
     mkts = eng.markets
     print(f"  markets: {src}; forensic target ${target/1e9:,.1f}B\n", flush=True)
@@ -480,6 +480,7 @@ def run_backtest_cli(args) -> int:
     ]
     checks = directional_checks(eng)
     print(summarize_backtest(stab, oos, sens, checks))
+    print("\n" + summarize_bands(uncertainty_bands(mkts, target)))
     return 0
 
 
